@@ -13,9 +13,13 @@ export const useLoginUserStore = defineStore('loginUser', () => {
 
     // 获取登录用户信息
     async function fetchLoginUser() {
-        const res = await getLoginUser()
-        if (res.data.code === 0 && res.data.data) {
-            loginUser.value = res.data.data
+        try {
+            const res = await getLoginUser()
+            if (res.data.code === 200 && res.data.data) {
+                loginUser.value = res.data.data
+            }
+        } catch {
+            // 未登录时后端返回 400，保持默认未登录态即可
         }
     }
 

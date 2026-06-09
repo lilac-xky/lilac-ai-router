@@ -3,6 +3,14 @@ spring:
     name: lilac-ai-router
   profiles:
     active: dev
+  ai:
+    openai:
+      # 通义千问兼容 OpenAI 接口
+      base-url: https://dashscope.aliyuncs.com/compatible-mode
+      chat:
+        options:
+          model: qwen-plus
+          temperature: 0.7
 server:
   port: 9090
   servlet:

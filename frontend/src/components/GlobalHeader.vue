@@ -6,7 +6,7 @@
                 <RouterLink to="/">
                     <div class="header-left">
                         <!-- <img class="logo" src="@/assets/logo.png" alt="Logo" /> -->
-                        <h1 class="site-title">项目名称</h1>
+                        <h1 class="site-title">lilac-ai-router</h1>
                     </div>
                 </RouterLink>
             </a-col>
@@ -108,7 +108,7 @@ const handleMenuClick: MenuProps['onClick'] = (e) => {
 // 退出登录
 const doLogout = async () => {
     const res = await userLogout()
-    if (res.data.code === 0) {
+    if (res.data.code === 200) {
         loginUserStore.setLoginUser({
             userName: '未登录',
         })

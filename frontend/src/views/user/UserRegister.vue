@@ -9,14 +9,14 @@
 
             <a-form-item name="userPassword" :rules="[
                 { required: true, message: '请输入密码' },
-                { min: 8, message: '密码不能小于 6 位' },
+                { min: 6, message: '密码不能小于 6 位' },
             ]">
                 <a-input-password v-model:value="formState.userPassword" placeholder="请输入密码" />
             </a-form-item>
 
             <a-form-item name="checkPassword" :rules="[
                 { required: true, message: '请确认密码' },
-                { min: 8, message: '密码不能小于 6 位' },
+                { min: 6, message: '密码不能小于 6 位' },
                 { validator: validateCheckPassword },
             ]">
                 <a-input-password v-model:value="formState.checkPassword" placeholder="请确认密码" />
@@ -69,7 +69,7 @@ const validateCheckPassword = (rule: unknown, value: string, callback: (error?: 
 const handleSubmit = async (values: API.UserRegisterRequest) => {
     const res = await userRegister(values)
     // 注册成功，跳转到登录页面
-    if (res.data.code === 0) {
+    if (res.data.code === 200) {
         message.success('注册成功')
         router.push({
             path: '/user/login',
