@@ -72,9 +72,14 @@ const originItems = [
         title: '主页',
     },
     {
-        key: '/admin/userManage',
-        label: '用户管理',
-        title: '用户管理',
+        key: '/user/apiKey',
+        label: 'API Key 管理',
+        title: 'API Key 管理',
+    },
+    {
+        key: '/user/chat',
+        label: '聊天',
+        title: '聊天',
     },
 ]
 

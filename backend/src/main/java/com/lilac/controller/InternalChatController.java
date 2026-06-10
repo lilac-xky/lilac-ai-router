@@ -34,11 +34,12 @@ public class InternalChatController {
     private UserService userService;
 
     /**
-     * 聊天接口
+     * 内部接口
      *
-     * @param request 请求
-     * @param request 请求参数
-     *                @return 响应
+     * @param request 请求体
+     * @param apiKeyId API Key ID
+     * @param httpRequest 请求
+     * @return 响应
      */
     @PostMapping(value = "/completions", produces = {MediaType.APPLICATION_JSON_VALUE, MediaType.TEXT_EVENT_STREAM_VALUE})
     @AuthCheck(mustRole = UserConstant.DEFAULT_ROLE)

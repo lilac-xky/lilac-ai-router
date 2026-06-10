@@ -19,6 +19,16 @@ const router = createRouter({
       name: 'userRegister',
       component: () => import('@/views/user/UserRegister.vue'),
     },
+    {
+      path: '/user/apiKey',
+      name: 'apiKey',
+      component: () => import('@/views/user/ApiKey.vue'),
+    },
+    {
+      path: '/user/chat',
+      name: 'chat',
+      component: () => import('@/views/Chat.vue'),
+    },
   ],
 })
 

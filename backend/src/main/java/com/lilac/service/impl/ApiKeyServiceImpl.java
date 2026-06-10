@@ -29,6 +29,9 @@ public class ApiKeyServiceImpl extends ServiceImpl<ApiKeyMapper, ApiKey> impleme
      */
     @Override
     public ApiKey createApiKey(String keyName, User loginUser) {
+        if (keyName == null || keyName.isEmpty()) {
+            throw new BusinessException(HttpsCodeEnum.PARAMS_ERROR, "API Key 名称不能为空");
+        }
         // 生成 API Key（sk- 前缀 + 32位随机字符）
         String keyValue = "sk-" + IdUtil.simpleUUID();
 

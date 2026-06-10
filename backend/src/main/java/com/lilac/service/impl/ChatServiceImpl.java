@@ -181,10 +181,8 @@ public class ChatServiceImpl implements ChatService {
         if (chatRequest.getMaxTokens() != null) {
             optionsBuilder.maxTokens(chatRequest.getMaxTokens());
         }
-
         return new Prompt(messages, optionsBuilder.build());
     }
-
 
     /**
      * 转换响应结果

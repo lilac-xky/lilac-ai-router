@@ -94,6 +94,34 @@ public class ApiKeyController {
 
 
     /**
+     * 获取 Token 消耗数
+     * 传 apiKeyId 时返回该 API Key 的消耗数；不传时返回当前用户所有 API Key 的累计消耗数
+     *
+     * @param apiKeyId API Key ID（可选）
+     * @param request  请求
+     * @return Token 消耗数
+     */
+    @GetMapping("/token/stats")
+    @AuthCheck(mustRole = UserConstant.DEFAULT_ROLE)
+    public Result<Long> getMyTokenStats(@RequestParam(required = false) Long apiKeyId, HttpServletRequest request) {
+        User loginUser = userService.getLoginUser(request);
+        // 指定了 API Key：返回该 Key 的消耗数（校验归属）
+        if (apiKeyId != null) {
+            ApiKey apiKey = apiKeyService.getById(apiKeyId);
+            if (apiKey == null || !apiKey.getUserId().equals(loginUser.getId())) {
+                throw new BusinessException(HttpsCodeEnum.NOT_FOUND_ERROR, "API Key 不存在");
+            }
+            return Result.success(apiKey.getTotalTokens() == null ? 0L : apiKey.getTotalTokens());
+        }
+        // 未指定：返回所有 API Key 的累计消耗数
+        List<ApiKey> apiKeys = apiKeyService.listUserApiKeys(loginUser.getId());
+        long totalTokens = apiKeys.stream()
+                .mapToLong(apiKey -> apiKey.getTotalTokens() == null ? 0L : apiKey.getTotalTokens())
+                .sum();
+        return Result.success(totalTokens);
+    }
+
+    /**
      * 撤销 API Key
      *
      * @param deleteRequest 删除请求
