@@ -41,4 +41,16 @@ public class ChatRequest implements Serializable {
      */
     @JsonProperty("max_tokens")
     private Integer maxTokens;
+
+    /**
+     * 是否启用深度思考
+     */
+    @JsonProperty("enable_reasoning")
+    private Boolean enableReasoning;
+
+    /**
+     * 路由策略类型（auto/cost_first/latency_first/round_robin/fixed），为空时由服务端按是否指定模型自动决定
+     */
+    @JsonProperty("routing_strategy")
+    private String routingStrategy;
 }

@@ -1,39 +1,51 @@
 package com.lilac.service.impl;
 
 import cn.hutool.core.util.IdUtil;
+import cn.hutool.core.util.StrUtil;
 import com.lilac.domain.dto.chat.ChatMessage;
 import com.lilac.domain.dto.chat.ChatRequest;
 import com.lilac.domain.dto.chat.ChatResponse;
+import com.lilac.domain.entity.Model;
+import com.lilac.domain.entity.ModelProvider;
 import com.lilac.enums.HttpsCodeEnum;
+import com.lilac.enums.RoutingStrategyTypeEnum;
 import com.lilac.exception.BusinessException;
 import com.lilac.service.ChatService;
+import com.lilac.service.ModelInvokeService;
+import com.lilac.service.ModelProviderService;
 import com.lilac.service.RequestLogService;
+import com.lilac.service.RoutingService;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.ai.chat.messages.AssistantMessage;
-import org.springframework.ai.chat.messages.Message;
-import org.springframework.ai.chat.messages.SystemMessage;
-import org.springframework.ai.chat.messages.UserMessage;
-import org.springframework.ai.chat.model.ChatModel;
-import org.springframework.ai.chat.prompt.Prompt;
-import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.stereotype.Service;
-import org.springframework.util.ObjectUtils;
 import reactor.core.publisher.Flux;
 
 import java.util.List;
-import java.util.stream.Collectors;
 
 /**
  * 聊天服务实现类
+ * 根据路由策略选择模型，通过适配器调用模型，并在失败时回退到备选模型
  */
 @Slf4j
 @Service
 public class ChatServiceImpl implements ChatService {
 
+    /**
+     * 模型类型：聊天
+     */
+    private static final String MODEL_TYPE_CHAT = "chat";
+
+    /**
+     * Fallback 最大重试次数
+     */
+    private static final int MAX_FALLBACK_RETRIES = 2;
+
     @Resource
-    private ChatModel chatModel;
+    private RoutingService routingService;
+    @Resource
+    private ModelInvokeService modelInvokeService;
+    @Resource
+    private ModelProviderService modelProviderService;
     @Resource
     private RequestLogService requestLogService;
 
@@ -41,154 +53,180 @@ public class ChatServiceImpl implements ChatService {
      * 非流式聊天
      *
      * @param chatRequest 请求参数
-     * @param userId 用户ID
-     * @param apiKeyId API密钥ID
-     * @return  响应结果
+     * @param userId      用户ID
+     * @param apiKeyId    API密钥ID
+     * @return 响应结果
      */
     @Override
     public ChatResponse chat(ChatRequest chatRequest, Long userId, Long apiKeyId) {
         long startTime = System.currentTimeMillis();
-        String modelName = chatRequest.getModel();
+        String requestedModel = chatRequest.getModel();
 
-        try {
-            // 构建 Prompt
-            Prompt prompt = buildPrompt(chatRequest);
-
-            // 调用 AI 模型
-            ChatClient chatClient = ChatClient.builder(chatModel).build();
-            org.springframework.ai.chat.model.ChatResponse aiResponse = chatClient
-                    .prompt(prompt)
-                    .call()
-                    .chatResponse();
-
-            // 转换响应格式
-            ChatResponse response = convertResponse(aiResponse, modelName);
-
-            // 记录请求日志
-            long duration = System.currentTimeMillis() - startTime;
-            requestLogService.logRequest(userId, apiKeyId, modelName,
-                    response.getUsage().getPromptTokens(),
-                    response.getUsage().getCompletionTokens(),
-                    response.getUsage().getTotalTokens(),
-                    (int) duration, "success", null);
-            return response;
-        } catch (Exception e) {
-            log.error("调用模型失败", e);
-            long duration = System.currentTimeMillis() - startTime;
-            requestLogService.logRequest(userId, apiKeyId, modelName, 0, 0, 0,
-                    (int) duration, "failed", e.getMessage());
-            throw new BusinessException(HttpsCodeEnum.SYSTEM_ERROR, "调用模型失败: " + e.getMessage());
+        // 确定路由策略：优先使用请求中指定的策略，否则根据是否指定模型决定
+        String strategyType = determineStrategyType(chatRequest.getRoutingStrategy(), requestedModel);
+        // 选择主模型
+        Model selectedModel = routingService.selectModel(strategyType, MODEL_TYPE_CHAT, requestedModel);
+        if (selectedModel == null) {
+            throw new BusinessException(HttpsCodeEnum.PARAMS_ERROR, "没有可用的模型");
         }
+        // 获取 Fallback 模型列表
+        List<Model> fallbackModels = routingService.getFallbackModels(strategyType, MODEL_TYPE_CHAT, requestedModel);
+
+        // 带 Fallback 的调用
+        return invokeWithFallback(selectedModel, fallbackModels, chatRequest, userId, apiKeyId, startTime);
     }
 
     /**
      * 流式聊天
      *
      * @param chatRequest 聊天请求参数
-     * @param userId 用户ID
-     * @param apiKeyId API密钥ID
+     * @param userId      用户ID
+     * @param apiKeyId    API密钥ID
      * @return 响应结果
      */
     @Override
     public Flux<String> chatStream(ChatRequest chatRequest, Long userId, Long apiKeyId) {
-        String modelName = chatRequest.getModel();
         long startTime = System.currentTimeMillis();
+        String requestedModel = chatRequest.getModel();
 
-        // Token 计数器
+        String strategyType = determineStrategyType(chatRequest.getRoutingStrategy(), requestedModel);
+        Model selectedModel = routingService.selectModel(strategyType, MODEL_TYPE_CHAT, requestedModel);
+        if (selectedModel == null) {
+            throw new BusinessException(HttpsCodeEnum.PARAMS_ERROR, "没有可用的模型");
+        }
+        List<Model> fallbackModels = routingService.getFallbackModels(strategyType, MODEL_TYPE_CHAT, requestedModel);
+
+        // 主模型流式调用，失败时回退到首个备选模型
+        return streamWithModel(selectedModel, chatRequest, userId, apiKeyId, startTime)
+                .onErrorResume(e -> {
+                    log.warn("模型 {} 流式调用失败，尝试 Fallback", selectedModel.getModelKey(), e);
+                    if (fallbackModels != null && !fallbackModels.isEmpty()) {
+                        return streamWithModel(fallbackModels.get(0), chatRequest, userId, apiKeyId, startTime);
+                    }
+                    return Flux.error(new BusinessException(HttpsCodeEnum.SYSTEM_ERROR, "流式调用模型失败: " + e.getMessage()));
+                });
+    }
+
+    /**
+     * 带 Fallback 的模型调用
+     */
+    private ChatResponse invokeWithFallback(Model primaryModel, List<Model> fallbackModels,
+                                            ChatRequest chatRequest, Long userId, Long apiKeyId, long startTime) {
+        try {
+            return callModel(primaryModel, chatRequest, userId, apiKeyId, startTime);
+        } catch (Exception e) {
+            log.warn("模型 {} 调用失败，尝试 Fallback", primaryModel.getModelKey(), e);
+            if (fallbackModels != null && !fallbackModels.isEmpty()) {
+                int retries = Math.min(fallbackModels.size(), MAX_FALLBACK_RETRIES);
+                for (int i = 0; i < retries; i++) {
+                    Model fallbackModel = fallbackModels.get(i);
+                    try {
+                        log.info("尝试 Fallback 模型: {}", fallbackModel.getModelKey());
+                        return callModel(fallbackModel, chatRequest, userId, apiKeyId, startTime);
+                    } catch (Exception fallbackException) {
+                        log.warn("Fallback 模型 {} 调用失败", fallbackModel.getModelKey(), fallbackException);
+                    }
+                }
+            }
+            throw new BusinessException(HttpsCodeEnum.SYSTEM_ERROR, "调用模型失败: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 调用单个模型（非流式），并记录请求日志
+     */
+    private ChatResponse callModel(Model model, ChatRequest chatRequest, Long userId, Long apiKeyId, long startTime) {
+        ModelProvider provider = getProvider(model);
+        try {
+            org.springframework.ai.chat.model.ChatResponse aiResponse =
+                    modelInvokeService.invoke(model, provider, chatRequest);
+            ChatResponse response = convertResponse(aiResponse, model.getModelKey());
+
+            long duration = System.currentTimeMillis() - startTime;
+            ChatResponse.Usage usage = response.getUsage();
+            requestLogService.logRequest(userId, apiKeyId, model.getModelKey(),
+                    usage.getPromptTokens(), usage.getCompletionTokens(), usage.getTotalTokens(),
+                    (int) duration, "success", null);
+            return response;
+        } catch (Exception e) {
+            long duration = System.currentTimeMillis() - startTime;
+            requestLogService.logRequest(userId, apiKeyId, model.getModelKey(), 0, 0, 0,
+                    (int) duration, "failed", e.getMessage());
+            throw e;
+        }
+    }
+
+    /**
+     * 流式调用单个模型，返回 SSE 文本流，并在结束/出错时记录日志
+     */
+    private Flux<String> streamWithModel(Model model, ChatRequest chatRequest, Long userId, Long apiKeyId, long startTime) {
+        ModelProvider provider = getProvider(model);
+
+        // Token 计数器（流式通常只有最后一个 chunk 携带 usage）
         final int[] promptTokens = {0};
         final int[] completionTokens = {0};
 
-        try {
-            // 构建 Prompt
-            Prompt prompt = buildPrompt(chatRequest);
-
-            // 调用流式 AI 模型
-            ChatClient chatClient = ChatClient.builder(chatModel).build();
-            Flux<org.springframework.ai.chat.model.ChatResponse> flux = chatClient
-                    .prompt(prompt)
-                    .stream()
-                    .chatResponse();
-
-            // 处理流式响应
-            return flux.flatMap(response -> {
-                // 获取 Token 信息（通常只有最后一个 chunk 才有）
-                if (response.getMetadata().getUsage() != null) {
-                    Integer promptToken = response.getMetadata().getUsage().getPromptTokens();
-                    Integer completion = response.getMetadata().getUsage().getCompletionTokens();
-
-                    if (promptToken != null && promptToken > 0) {
-                        promptTokens[0] = promptToken;
+        return modelInvokeService.invokeStreamChunk(model, provider, chatRequest)
+                .flatMap(chunk -> {
+                    if (chunk.getPromptTokens() != null && chunk.getPromptTokens() > 0) {
+                        promptTokens[0] = chunk.getPromptTokens();
                     }
-                    if (completion != null && completion > 0) {
-                        completionTokens[0] = completion;
+                    if (chunk.getCompletionTokens() != null && chunk.getCompletionTokens() > 0) {
+                        completionTokens[0] = chunk.getCompletionTokens();
                     }
-                }
-
-                // 检查是否有内容（最后一个 chunk 只有 token 信息，没有内容）
-                if (ObjectUtils.isEmpty(response.getResult()) || ObjectUtils.isEmpty(response.getResult().getOutput())) {
-                    return Flux.empty();
-                }
-
-                // 将文本中的换行符转义为 \\n，避免与 SSE 格式冲突
-                String text = response.getResult().getOutput().getText();
-                String escapedText = text.replace("\n", "\\n");
-                return Flux.just(escapedText + "\n\n");
-            }).doOnComplete(() -> {
-                // 流结束时记录日志
-                long duration = System.currentTimeMillis() - startTime;
-                int totalTokens = promptTokens[0] + completionTokens[0];
-
-                requestLogService.logRequest(userId, apiKeyId, modelName,
-                        promptTokens[0], completionTokens[0], totalTokens,
-                        (int) duration, "success", null);
-            }).doOnError(error -> {
-                // 流错误时记录日志
-                log.error("流式调用模型失败", error);
-                long duration = System.currentTimeMillis() - startTime;
-                requestLogService.logRequest(userId, apiKeyId, modelName, 0, 0, 0,
-                        (int) duration, "failed", error.getMessage());
-            });
-        } catch (Exception e) {
-            log.error("流式调用模型失败", e);
-            throw new BusinessException(HttpsCodeEnum.SYSTEM_ERROR, "流式调用模型失败: " + e.getMessage());
-        }
-    }
-
-    /**
-     * 构建 Prompt
-     *
-     * @param chatRequest 聊天请求参数
-     * @return 构建后的 Prompt
-     */
-    private Prompt buildPrompt(ChatRequest chatRequest) {
-        List<Message> messages = chatRequest.getMessages().stream()
-                .map(msg -> switch (msg.getRole()) {
-                    case "system" -> new SystemMessage(msg.getContent());
-                    case "assistant" -> new AssistantMessage(msg.getContent());
-                    default -> new UserMessage(msg.getContent());
+                    // 仅在有文本内容时下发，避免空 chunk 干扰 SSE
+                    if (!chunk.hasText()) {
+                        return Flux.empty();
+                    }
+                    // 将文本中的换行符转义为 \n，避免与 SSE 格式冲突
+                    String escapedText = chunk.getText().replace("\n", "\\n");
+                    return Flux.just(escapedText + "\n\n");
                 })
-                .collect(Collectors.toList());
-
-        // 构建选项
-        OpenAiChatOptions.Builder optionsBuilder = OpenAiChatOptions.builder()
-                .model(chatRequest.getModel())
-                // 启用流式响应的 token 统计
-                .streamUsage(true);
-
-        if (chatRequest.getTemperature() != null) {
-            optionsBuilder.temperature(chatRequest.getTemperature());
-        }
-        if (chatRequest.getMaxTokens() != null) {
-            optionsBuilder.maxTokens(chatRequest.getMaxTokens());
-        }
-        return new Prompt(messages, optionsBuilder.build());
+                .doOnComplete(() -> {
+                    long duration = System.currentTimeMillis() - startTime;
+                    int totalTokens = promptTokens[0] + completionTokens[0];
+                    requestLogService.logRequest(userId, apiKeyId, model.getModelKey(),
+                            promptTokens[0], completionTokens[0], totalTokens,
+                            (int) duration, "success", null);
+                })
+                .doOnError(error -> {
+                    log.error("模型 {} 流式调用失败", model.getModelKey(), error);
+                    long duration = System.currentTimeMillis() - startTime;
+                    requestLogService.logRequest(userId, apiKeyId, model.getModelKey(), 0, 0, 0,
+                            (int) duration, "failed", error.getMessage());
+                });
     }
 
     /**
-     * 转换响应结果
+     * 根据模型获取其所属提供者
+     */
+    private ModelProvider getProvider(Model model) {
+        ModelProvider provider = modelProviderService.getById(model.getProviderId());
+        if (provider == null) {
+            throw new BusinessException(HttpsCodeEnum.SYSTEM_ERROR, "模型 " + model.getModelKey() + " 对应的提供者不存在");
+        }
+        return provider;
+    }
+
+    /**
+     * 确定路由策略类型
+     * 优先使用请求显式指定的策略；未指定时，指定了具体模型则用固定策略，否则使用自动路由
+     */
+    private String determineStrategyType(String requestedStrategy, String requestedModel) {
+        if (StrUtil.isNotBlank(requestedStrategy)) {
+            return requestedStrategy;
+        }
+        if (StrUtil.isNotBlank(requestedModel)) {
+            return RoutingStrategyTypeEnum.FIXED.getValue();
+        }
+        return RoutingStrategyTypeEnum.AUTO.getValue();
+    }
+
+    /**
+     * 将 Spring AI 的响应转换为统一的响应结果
      *
      * @param aiResponse AI 响应结果
-     * @param modelName 模型名称
+     * @param modelName  模型名称
      * @return 转换后的响应结果
      */
     private ChatResponse convertResponse(org.springframework.ai.chat.model.ChatResponse aiResponse, String modelName) {
