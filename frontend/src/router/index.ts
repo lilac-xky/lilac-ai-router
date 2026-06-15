@@ -1,4 +1,5 @@
-import { createRouter, createWebHistory } from 'vue-router'
+import { createRouter, createWebHistory, RouterView } from 'vue-router'
+import { h } from 'vue'
 import HomePage from '@/views/Home.vue'
 
 const router = createRouter({
@@ -29,6 +30,26 @@ const router = createRouter({
       name: 'chat',
       component: () => import('@/views/Chat.vue'),
     },
+    {
+      path: '/admin',
+      name: 'admin',
+      component: { render: () => h(RouterView) },
+      meta: {
+        access: 'admin'
+      },
+      children: [
+        {
+          path: 'provider',
+          name: '模型提供者管理',
+          component: () => import('@/views/admin/ProviderManage.vue'),
+        },
+        {
+          path: 'model',
+          name: '模型管理',
+          component: () => import('@/views/admin/ModelManage.vue'),
+        }
+      ]
+    }
   ],
 })
 

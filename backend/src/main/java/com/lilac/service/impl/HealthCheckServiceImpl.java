@@ -59,6 +59,9 @@ public class HealthCheckServiceImpl implements HealthCheckService {
     private static final double SUCCESS_RATE_WEIGHT = 0.3;
     private static final double PRIORITY_WEIGHT = 0.1;
 
+    /**
+     * 检查所有提供者的健康状态
+     */
     @Override
     public void checkAllProviders() {
         // 获取所有提供者
@@ -77,6 +80,12 @@ public class HealthCheckServiceImpl implements HealthCheckService {
         log.info("健康检查完成");
     }
 
+    /**
+     * 检查指定提供者的健康状态
+     *
+     * @param provider 提供者
+     * @return 是否健康
+     */
     @Override
     public boolean checkProviderHealth(ModelProvider provider) {
         if (provider == null) {
@@ -97,7 +106,6 @@ public class HealthCheckServiceImpl implements HealthCheckService {
             // 更新提供者的健康信息
             modelProviderService.updateHealthStatus(provider.getId(), healthStatus, latency, successRate);
             log.debug("提供者 {} 健康检查完成: 健康={}, 延迟={}ms, 成功率={}%", provider.getDisplayName(), isHealthy, latency, successRate);
-
             return isHealthy;
         } catch (Exception e) {
             log.error("提供者 {} 健康检查失败", provider.getDisplayName(), e);
@@ -110,6 +118,9 @@ public class HealthCheckServiceImpl implements HealthCheckService {
         }
     }
 
+    /**
+     * 从请求日志中同步模型指标
+     */
     @Override
     public void syncModelMetricsFromRequestLog() {
         log.info("开始从请求日志同步模型指标");

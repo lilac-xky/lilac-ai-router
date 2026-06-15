@@ -81,6 +81,16 @@ const originItems = [
         label: '聊天',
         title: '聊天',
     },
+    {
+        key: '/admin/model',
+        label: '模型管理',
+        title: '模型管理',
+    },
+    {
+        key: '/admin/provider',
+        label: '模型提供者管理',
+        title: '模型提供者管理',
+    },
 ]
 
 // 过滤菜单项

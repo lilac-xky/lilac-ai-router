@@ -16,6 +16,7 @@
 
     <properties>
         <java.version>17</java.version>
+        <jackson-bom.version>2.17.2</jackson-bom.version>
     </properties>
 
     <dependencyManagement>
@@ -88,7 +89,7 @@
         <dependency>
             <groupId>ai.z.openapi</groupId>
             <artifactId>zai-sdk</artifactId>
-            <version>0.3.0</version>
+            <version>0.3.3</version>
         </dependency>
         <!-- DeepSeek -->
         <dependency>

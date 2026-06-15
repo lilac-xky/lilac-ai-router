@@ -138,8 +138,7 @@ public class ChatServiceImpl implements ChatService {
     private ChatResponse callModel(Model model, ChatRequest chatRequest, Long userId, Long apiKeyId, long startTime) {
         ModelProvider provider = getProvider(model);
         try {
-            org.springframework.ai.chat.model.ChatResponse aiResponse =
-                    modelInvokeService.invoke(model, provider, chatRequest);
+            org.springframework.ai.chat.model.ChatResponse aiResponse = modelInvokeService.invoke(model, provider, chatRequest);
             ChatResponse response = convertResponse(aiResponse, model.getModelKey());
 
             long duration = System.currentTimeMillis() - startTime;

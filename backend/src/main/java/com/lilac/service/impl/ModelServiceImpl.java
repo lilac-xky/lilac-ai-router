@@ -18,6 +18,11 @@ import java.util.List;
 @Service
 public class ModelServiceImpl extends ServiceImpl<ModelMapper, Model> implements ModelService {
 
+    /**
+     * 获取所有启用的模型
+     *
+     * @return 模型列表
+     */
     @Override
     public List<Model> getActiveModels() {
         QueryWrapper queryWrapper = QueryWrapper.create()
@@ -25,6 +30,15 @@ public class ModelServiceImpl extends ServiceImpl<ModelMapper, Model> implements
         return list(queryWrapper);
     }
 
+    /**
+     * 更新模型指标信息
+     *
+     * @param modelId 模型ID
+     * @param healthStatus 模型健康状态
+     * @param avgLatency 平均延迟
+     * @param successRate 成功率
+     * @param score 综合得分
+     */
     @Override
     public void updateModelMetrics(Long modelId, String healthStatus, Integer avgLatency, BigDecimal successRate, BigDecimal score) {
         // 使用 UpdateEntity 只更新指定字段，避免覆盖其它列

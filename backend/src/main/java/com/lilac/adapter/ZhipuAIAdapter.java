@@ -47,9 +47,7 @@ public class ZhipuAIAdapter implements ModelAdapter {
         try {
             ZhipuAiClient client = createClient(provider);
             ChatCompletionCreateParams request = buildRequest(chatRequest, model, false);
-
             ChatCompletionResponse response = client.chat().createChatCompletion(request);
-
             return convertToChatResponse(response);
         } catch (Exception e) {
             log.error("智谱 AI 适配器调用模型 {} 失败", model.getModelKey(), e);
@@ -70,14 +68,11 @@ public class ZhipuAIAdapter implements ModelAdapter {
         try {
             ZhipuAiClient client = createClient(provider);
             ChatCompletionCreateParams request = buildRequest(chatRequest, model, true);
-
             ChatCompletionResponse response = client.chat().createChatCompletion(request);
-
             Flowable<ModelData> responseFlowable = response.getFlowable();
             if (ObjectUtils.isEmpty(responseFlowable)) {
                 return Flux.empty();
             }
-
             // 将 RxJava Flowable 转换为 Reactor Flux
             return Flux.from(responseFlowable)
                     .map(this::convertModelDataToChatResponse);
@@ -138,17 +133,14 @@ public class ZhipuAIAdapter implements ModelAdapter {
         // 提取内容
         if (modelData.getChoices() != null && !modelData.getChoices().isEmpty()) {
             Choice choice = modelData.getChoices().get(0);
-
             // 流式响应使用 delta 字段
             if (choice.getDelta() != null) {
                 Delta delta = choice.getDelta();
-
                 // 提取深度思考内容
                 String reasoningContent = delta.getReasoningContent();
                 if (reasoningContent != null && !reasoningContent.isEmpty()) {
                     builder.reasoningContent(reasoningContent);
                 }
-
                 // 提取普通文本内容
                 String content = delta.getContent();
                 if (content != null && !content.isEmpty()) {
@@ -197,11 +189,9 @@ public class ZhipuAIAdapter implements ModelAdapter {
                 content = choice.getDelta().getContent();
             }
         }
-
         // 创建 Generation
         AssistantMessage assistantMessage = new AssistantMessage(content);
         Generation generation = new Generation(assistantMessage);
-
         // 创建 Usage
         DefaultUsage usage = null;
         if (modelData.getUsage() != null) {
@@ -217,7 +207,6 @@ public class ZhipuAIAdapter implements ModelAdapter {
                 .build();
         return new ChatResponse(List.of(generation), metadata);
     }
-
 
     /**
      * 是否支持该模型ider
@@ -259,12 +248,10 @@ public class ZhipuAIAdapter implements ModelAdapter {
         if (chatRequest.getTemperature() != null) {
             builder.temperature(chatRequest.getTemperature().floatValue());
         }
-
         // 设置最大 token
         if (chatRequest.getMaxTokens() != null) {
             builder.maxTokens(chatRequest.getMaxTokens());
         }
-
         // 启用深度思考
         if (chatRequest.getEnableReasoning() != null && chatRequest.getEnableReasoning()) {
             ChatThinking thinking = ChatThinking.builder()

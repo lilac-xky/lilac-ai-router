@@ -44,9 +44,10 @@ export async function revokeApiKey(body: API.DeleteRequest, options?: { [key: st
   })
 }
 
-/** 获取 Token 消耗数（传 apiKeyId 则为该 Key，否则为全部累计） GET /api/api/key/token/stats */
+/** 获取 Token 消耗数 传 apiKeyId 时返回该 API Key 的消耗数；不传时返回当前用户所有 API Key 的累计消耗数 GET /api/api/key/token/stats */
 export async function getMyTokenStats(
-  params?: API.getMyTokenStatsParams,
+  // 叠加生成的Param类型 (非body参数swagger默认没有生成对象)
+  params: API.getMyTokenStatsParams,
   options?: { [key: string]: any }
 ) {
   return request<API.ResultLong>('/api/api/key/token/stats', {
