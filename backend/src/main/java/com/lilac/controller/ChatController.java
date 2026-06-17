@@ -1,5 +1,6 @@
 package com.lilac.controller;
 
+import com.lilac.anonation.RateLimit;
 import com.lilac.domain.dto.chat.ChatRequest;
 import com.lilac.domain.entity.ApiKey;
 import com.lilac.enums.HttpsCodeEnum;
@@ -34,6 +35,7 @@ public class ChatController {
      * @return 响应
      */
     @PostMapping(value = "/completions", produces = {MediaType.APPLICATION_JSON_VALUE, MediaType.TEXT_EVENT_STREAM_VALUE})
+    @RateLimit(type = RateLimit.LimitType.API_KEY, limit = 60)
     public Object chatCompletions(@RequestBody ChatRequest request, @RequestHeader(value = "Authorization", required = false) String authorization,
                                   HttpServletRequest httpRequest) {
         // 验证 API Key

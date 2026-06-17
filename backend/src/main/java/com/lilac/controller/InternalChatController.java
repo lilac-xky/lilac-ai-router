@@ -1,6 +1,7 @@
 package com.lilac.controller;
 
 import com.lilac.anonation.AuthCheck;
+import com.lilac.anonation.RateLimit;
 import com.lilac.constant.UserConstant;
 import com.lilac.domain.dto.chat.ChatRequest;
 import com.lilac.domain.dto.chat.ChatResponse;
@@ -43,6 +44,7 @@ public class InternalChatController {
      */
     @PostMapping(value = "/completions", produces = {MediaType.APPLICATION_JSON_VALUE, MediaType.TEXT_EVENT_STREAM_VALUE})
     @AuthCheck(mustRole = UserConstant.DEFAULT_ROLE)
+    @RateLimit(type = RateLimit.LimitType.IP, limit = 30)
     public Object chatCompletions(@RequestBody ChatRequest request, @RequestParam Long apiKeyId, HttpServletRequest httpRequest) {
         User loginUser = userService.getLoginUser(httpRequest);
 
