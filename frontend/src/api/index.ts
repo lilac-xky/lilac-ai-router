@@ -8,6 +8,7 @@ import * as apiKeyController from './apiKeyController'
 import * as internalChatController from './internalChatController'
 import * as modelController from './modelController'
 import * as modelProviderController from './modelProviderController'
+import * as blacklistController from './blacklistController'
 export default {
   userController,
   chatController,
@@ -15,4 +16,5 @@ export default {
   internalChatController,
   modelController,
   modelProviderController,
+  blacklistController,
 }

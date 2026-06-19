@@ -21,6 +21,13 @@ declare namespace API {
     createTime?: string
   }
 
+  type BlacklistRequest = {
+    /** IP 地址 */
+    ip?: string
+    /** 封禁原因 */
+    reason?: string
+  }
+
   type chatCompletionsParams = {
     /** API Key ID */
     apiKeyId: number
@@ -48,6 +55,10 @@ declare namespace API {
     stream?: boolean
     /** 温度参数（0-1） */
     temperature?: number
+  }
+
+  type checkBlacklistParams = {
+    ip: string
   }
 
   type Choice = {
@@ -365,6 +376,12 @@ declare namespace API {
     code?: number
     msg?: string
     data?: PageProviderVO
+  }
+
+  type ResultSetString = {
+    code?: number
+    msg?: string
+    data?: string[]
   }
 
   type Usage = {

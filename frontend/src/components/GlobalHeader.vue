@@ -91,6 +91,11 @@ const originItems = [
         label: '模型提供者管理',
         title: '模型提供者管理',
     },
+    {
+        key: '/admin/blackList',
+        label: '黑名单管理',
+        title: '黑名单管理',
+    },
 ]
 
 // 过滤菜单项

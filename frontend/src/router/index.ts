@@ -47,6 +47,11 @@ const router = createRouter({
           path: 'model',
           name: '模型管理',
           component: () => import('@/views/admin/ModelManage.vue'),
+        },
+        {
+          path: 'blackList',
+          name: '黑名单管理',
+          component: () => import('@/views/admin/BlackManage.vue'),
         }
       ]
     }
