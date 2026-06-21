@@ -72,13 +72,27 @@
                 <a-empty v-if="messages.length === 0 && !loading" description="开始你的对话吧" />
                 <div v-for="(msg, index) in messages" :key="index" :class="['message-item', msg.role]">
                     <div class="message-role">{{ getRoleLabel(msg.role || '') }}</div>
+                    <div v-if="msg.reasoningContent" class="reasoning-block">
+                        <div class="reasoning-block-title">
+                            <BulbOutlined /> 深度思考
+                        </div>
+                        <div class="reasoning-block-content"
+                            v-html="renderMarkdown(msg.reasoningContent)"></div>
+                    </div>
                     <div class="message-content" v-html="renderMarkdown(msg.content || '')"></div>
                 </div>
                 <!-- 加载中的流式消息 -->
                 <div v-if="loading" class="message-item assistant">
                     <div class="message-role">AI</div>
+                    <div v-if="streamingReasoning" class="reasoning-block">
+                        <div class="reasoning-block-title">
+                            <BulbOutlined /> 深度思考
+                        </div>
+                        <div class="reasoning-block-content"
+                            v-html="renderMarkdown(streamingReasoning)"></div>
+                    </div>
                     <div class="message-content">
-                        <a-spin v-if="!streamingContent" />
+                        <a-spin v-if="!streamingContent && !streamingReasoning" />
                         <span v-else v-html="renderMarkdown(streamingContent)"></span>
                     </div>
                 </div>
@@ -190,14 +204,17 @@ const activeCategory = ref<'all' | 'fast' | 'reasoning'>('all')
 const selectedApiKeyId = ref<number>()
 // API Key 列表
 const apiKeys = ref<API.ApiKeyVO[]>([])
-// 消息列表
-const messages = ref<API.ChatMessage[]>([])
+// 消息列表（在标准消息基础上附带可选的深度思考内容）
+type ChatMessageItem = API.ChatMessage & { reasoningContent?: string }
+const messages = ref<ChatMessageItem[]>([])
 // 用户输入
 const userInput = ref('')
 // 加载状态
 const loading = ref(false)
 // 流式响应的临时内容
 const streamingContent = ref('')
+// 流式响应的临时深度思考内容（deepseek-reasoner 专属）
+const streamingReasoning = ref('')
 // Token 统计
 const totalTokens = ref(0)
 // 消息列表的 DOM 引用
@@ -297,6 +314,7 @@ const selectModelAndClose = (model: API.ModelVO) => {
 const clearChat = () => {
     messages.value = []
     streamingContent.value = ''
+    streamingReasoning.value = ''
     lastError.value = ''
 }
 
@@ -345,6 +363,7 @@ async function sendCompletion() {
 
     loading.value = true
     streamingContent.value = ''
+    streamingReasoning.value = ''
     lastError.value = ''
 
     await nextTick()
@@ -386,18 +405,32 @@ async function sendCompletion() {
 
         let buffer = ''
         let assistantContent = ''
+        let assistantReasoning = ''
 
-        // 解析一段 SSE 文本块，累加到 assistantContent
+        // 解析一段 SSE 文本块：每行 data: 携带一个结构化的 StreamResponse chunk
         const consume = (chunk: string) => {
             const lines = chunk.split('\n')
             for (const line of lines) {
-                if (line.startsWith('data:')) {
-                    const data = line.substring(5).trim()
-                    if (data && data !== '[DONE]') {
-                        assistantContent += data
-                        streamingContent.value = assistantContent
-                        scrollToBottom()
+                if (!line.startsWith('data:')) continue
+                const data = line.substring(5).trim()
+                if (!data || data === '[DONE]') continue
+                try {
+                    const payload = JSON.parse(data)
+                    const delta = payload?.choices?.[0]?.delta
+                    if (!delta) continue
+                    // 深度思考增量（deepseek-reasoner 专属）
+                    if (delta.reasoningContent) {
+                        assistantReasoning += delta.reasoningContent
+                        streamingReasoning.value = assistantReasoning
                     }
+                    // 答案正文增量
+                    if (delta.content) {
+                        assistantContent += delta.content
+                        streamingContent.value = assistantContent
+                    }
+                    scrollToBottom()
+                } catch (e) {
+                    console.warn('解析流式数据失败', e, data)
                 }
             }
         }
@@ -417,8 +450,13 @@ async function sendCompletion() {
         if (buffer) consume(buffer)
 
         // 完成
-        messages.value.push({ role: 'assistant', content: assistantContent })
+        messages.value.push({
+            role: 'assistant',
+            content: assistantContent,
+            reasoningContent: assistantReasoning || undefined,
+        })
         streamingContent.value = ''
+        streamingReasoning.value = ''
         await loadTokenStats()
     } catch (error: any) {
         // 保留刚才的用户消息，展示重试入口
@@ -426,6 +464,7 @@ async function sendCompletion() {
         lastError.value = '对话失败：' + msg
         message.error(lastError.value)
         streamingContent.value = ''
+        streamingReasoning.value = ''
     } finally {
         loading.value = false
     }
@@ -632,6 +671,31 @@ onMounted(() => {
     font-size: 12px;
     color: #888;
     margin-bottom: 4px;
+}
+
+/* 深度思考块 */
+.reasoning-block {
+    margin-bottom: 10px;
+    padding: 8px 12px;
+    background: #fafafa;
+    border-left: 3px solid #faad14;
+    border-radius: 4px;
+}
+
+.reasoning-block-title {
+    font-size: 12px;
+    color: #d48806;
+    margin-bottom: 4px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.reasoning-block-content {
+    font-size: 13px;
+    color: #888;
+    line-height: 1.6;
+    word-break: break-word;
 }
 
 .message-content {

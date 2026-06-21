@@ -110,6 +110,12 @@
             <version>5.8.44</version>
         </dependency>
 
+        <dependency>
+            <groupId>com.lilac</groupId>
+            <artifactId>lilac-ai-router-sdk</artifactId>
+            <version>1.0.0</version>
+        </dependency>
+
         <!-- fastjson -->
         <dependency>
             <groupId>com.alibaba</groupId>

@@ -10,6 +10,7 @@ import com.lilac.domain.entity.ModelProvider;
 import com.lilac.enums.HttpsCodeEnum;
 import com.lilac.enums.RoutingStrategyTypeEnum;
 import com.lilac.exception.BusinessException;
+import com.lilac.model.StreamResponse;
 import com.lilac.service.ChatService;
 import com.lilac.service.ModelInvokeService;
 import com.lilac.service.ModelProviderService;
@@ -85,7 +86,7 @@ public class ChatServiceImpl implements ChatService {
      * @return 响应结果
      */
     @Override
-    public Flux<String> chatStream(ChatRequest chatRequest, Long userId, Long apiKeyId) {
+    public Flux<StreamResponse> chatStream(ChatRequest chatRequest, Long userId, Long apiKeyId) {
         long startTime = System.currentTimeMillis();
         String requestedModel = chatRequest.getModel();
 
@@ -97,14 +98,15 @@ public class ChatServiceImpl implements ChatService {
         List<Model> fallbackModels = routingService.getFallbackModels(strategyType, MODEL_TYPE_CHAT, requestedModel);
 
         // 主模型流式调用，失败时回退到首个备选模型
-        return streamWithModel(selectedModel, chatRequest, userId, apiKeyId, startTime)
-                .onErrorResume(e -> {
-                    log.warn("模型 {} 流式调用失败，尝试 Fallback", selectedModel.getModelKey(), e);
-                    if (fallbackModels != null && !fallbackModels.isEmpty()) {
-                        return streamWithModel(fallbackModels.get(0), chatRequest, userId, apiKeyId, startTime);
-                    }
-                    return Flux.error(new BusinessException(HttpsCodeEnum.SYSTEM_ERROR, "流式调用模型失败: " + e.getMessage()));
-                });
+        Flux<StreamResponse> stream = streamWithModel(selectedModel, chatRequest, userId, apiKeyId, startTime);
+        if (fallbackModels != null && !fallbackModels.isEmpty()) {
+            Model fallbackModel = fallbackModels.get(0);
+            stream = stream.onErrorResume(e -> {
+                log.warn("模型 {} 流式调用失败，回退到备选模型 {}", selectedModel.getModelKey(), fallbackModel.getModelKey(), e);
+                return streamWithModel(fallbackModel, chatRequest, userId, apiKeyId, startTime);
+            });
+        }
+        return stream;
     }
 
     /**
@@ -156,11 +158,16 @@ public class ChatServiceImpl implements ChatService {
     }
 
     /**
-     * 流式调用单个模型，返回 SSE 文本流，并在结束/出错时记录日志
+     * 流式调用单个模型，返回统一的结构化响应流，并在结束/出错时记录日志
      */
-    private Flux<String> streamWithModel(Model model, ChatRequest chatRequest, Long userId, Long apiKeyId, long startTime) {
+    private Flux<StreamResponse> streamWithModel(Model model, ChatRequest chatRequest, Long userId, Long apiKeyId, long startTime) {
         ModelProvider provider = getProvider(model);
 
+        // 本次流的唯一标识与创建时间（所有 chunk 共用）
+        final String traceId = IdUtil.simpleUUID();
+        final long created = System.currentTimeMillis() / 1000;
+        // 首个块标识，用于在 delta 中携带 role
+        final boolean[] isFirstChunk = {true};
         // Token 计数器（流式通常只有最后一个 chunk 携带 usage）
         final int[] promptTokens = {0};
         final int[] completionTokens = {0};
@@ -173,14 +180,56 @@ public class ChatServiceImpl implements ChatService {
                     if (chunk.getCompletionTokens() != null && chunk.getCompletionTokens() > 0) {
                         completionTokens[0] = chunk.getCompletionTokens();
                     }
-                    // 仅在有文本内容时下发，避免空 chunk 干扰 SSE
-                    if (!chunk.hasText()) {
+                    // 既没有文本也没有思考内容，跳过空 chunk
+                    if (!chunk.hasText() && !chunk.hasReasoningContent()) {
                         return Flux.empty();
                     }
-                    // 将文本中的换行符转义为 \n，避免与 SSE 格式冲突
-                    String escapedText = chunk.getText().replace("\n", "\\n");
-                    return Flux.just(escapedText + "\n\n");
+
+                    // 构建 Delta
+                    StreamResponse.Delta.DeltaBuilder deltaBuilder = StreamResponse.Delta.builder();
+                    // 第一个块包含 role
+                    if (isFirstChunk[0]) {
+                        deltaBuilder.role("assistant");
+                        isFirstChunk[0] = false;
+                    }
+                    // 处理普通文本内容
+                    if (chunk.hasText()) {
+                        deltaBuilder.content(chunk.getText());
+                    }
+                    // 处理深度思考内容（deepseek-reasoner 专属）
+                    if (chunk.hasReasoningContent()) {
+                        deltaBuilder.reasoningContent(chunk.getReasoningContent());
+                    }
+
+                    StreamResponse.StreamChoice choice = StreamResponse.StreamChoice.builder()
+                            .index(0)
+                            .delta(deltaBuilder.build())
+                            .finishReason(null)  // 未结束时为 null
+                            .build();
+
+                    return Flux.just(StreamResponse.builder()
+                            .id(traceId)
+                            .object("chat.completion.chunk")
+                            .created(created)
+                            .model(model.getModelKey())
+                            .choices(List.of(choice))
+                            .build());
                 })
+                // 流结束时追加一个带 finishReason: "stop" 的结束标识
+                .concatWith(Flux.defer(() -> {
+                    StreamResponse.StreamChoice finishChoice = StreamResponse.StreamChoice.builder()
+                            .index(0)
+                            .delta(StreamResponse.Delta.builder().build())
+                            .finishReason("stop")
+                            .build();
+                    return Flux.just(StreamResponse.builder()
+                            .id(traceId)
+                            .object("chat.completion.chunk")
+                            .created(created)
+                            .model(model.getModelKey())
+                            .choices(List.of(finishChoice))
+                            .build());
+                }))
                 .doOnComplete(() -> {
                     long duration = System.currentTimeMillis() - startTime;
                     int totalTokens = promptTokens[0] + completionTokens[0];

@@ -1,5 +1,6 @@
 package com.lilac.controller;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.lilac.anonation.AuthCheck;
 import com.lilac.anonation.RateLimit;
 import com.lilac.constant.UserConstant;
@@ -33,6 +34,8 @@ public class InternalChatController {
     private ApiKeyService apiKeyService;
     @Resource
     private UserService userService;
+    @Resource
+    private ObjectMapper objectMapper;
 
     /**
      * 内部接口
@@ -73,12 +76,26 @@ public class InternalChatController {
         // 判断是否为流式请求
         Boolean stream = request.getStream();
         if (stream != null && stream) {
-            // 流式响应
-            return chatService.chatStream(request, loginUser.getId(), apiKey.getId());
+            // 流式响应：将每个 StreamResponse 序列化为 SSE 数据行
+            return chatService.chatStream(request, apiKey.getUserId(), apiKey.getId())
+                    .map(this::toSseData)
+                    .concatWith(reactor.core.publisher.Flux.just("data: [DONE]\n\n"));
         } else {
             // 非流式响应
             ChatResponse response = chatService.chat(request, loginUser.getId(), apiKey.getId());
             return Result.success(response);
+        }
+    }
+
+    /**
+     * 将结构化的流式响应序列化为 SSE 数据行（data: {json}\n\n）
+     */
+    private String toSseData(com.lilac.model.StreamResponse streamResponse) {
+        try {
+            return "data: " + objectMapper.writeValueAsString(streamResponse) + "\n\n";
+        } catch (Exception e) {
+            log.error("序列化流式响应失败", e);
+            return "";
         }
     }
 }

@@ -5,6 +5,7 @@ import com.lilac.domain.dto.chat.ChatRequest;
 import com.lilac.domain.entity.ApiKey;
 import com.lilac.enums.HttpsCodeEnum;
 import com.lilac.exception.BusinessException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.lilac.service.ApiKeyService;
 import com.lilac.service.ChatService;
 import jakarta.annotation.Resource;
@@ -25,6 +26,8 @@ public class ChatController {
     private ChatService chatService;
     @Resource
     private ApiKeyService apiKeyService;
+    @Resource
+    private ObjectMapper objectMapper;
 
     /**
      * 聊天接口
@@ -61,11 +64,25 @@ public class ChatController {
         // 判断是否为流式请求
         Boolean stream = request.getStream();
         if (stream != null && stream) {
-            // 流式响应
-            return chatService.chatStream(request, apiKey.getUserId(), apiKey.getId());
+            // 流式响应：将每个 StreamResponse 序列化为 SSE 数据行
+            return chatService.chatStream(request, apiKey.getUserId(), apiKey.getId())
+                    .map(this::toSseData)
+                    .concatWith(reactor.core.publisher.Flux.just("data: [DONE]\n\n"));
         } else {
             // 非流式响应
             return chatService.chat(request, apiKey.getUserId(), apiKey.getId());
+        }
+    }
+
+    /**
+     * 将结构化的流式响应序列化为 SSE 数据行（data: {json}\n\n）
+     */
+    private String toSseData(com.lilac.model.StreamResponse streamResponse) {
+        try {
+            return "data: " + objectMapper.writeValueAsString(streamResponse) + "\n\n";
+        } catch (Exception e) {
+            log.error("序列化流式响应失败", e);
+            return "";
         }
     }
 }

@@ -2,6 +2,7 @@ package com.lilac.service;
 
 import com.lilac.domain.dto.chat.ChatRequest;
 import com.lilac.domain.dto.chat.ChatResponse;
+import com.lilac.model.StreamResponse;
 import reactor.core.publisher.Flux;
 
 /**
@@ -27,5 +28,5 @@ public interface ChatService {
      * @param apiKeyId API密钥ID
      * @return 响应结果
      */
-    Flux<String> chatStream(ChatRequest chatRequest, Long userId, Long apiKeyId);
+    Flux<StreamResponse> chatStream(ChatRequest chatRequest, Long userId, Long apiKeyId);
 }
