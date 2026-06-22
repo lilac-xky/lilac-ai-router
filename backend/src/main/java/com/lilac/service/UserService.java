@@ -45,4 +45,36 @@ public interface UserService extends IService<User> {
      * 是否为管理员
      */
     boolean isAdmin(User user);
+
+    /**
+     * 禁用用户
+     *
+     * @param userId 用户ID
+     * @return 是否成功
+     */
+    boolean disableUser(Long userId);
+
+    /**
+     * 启用用户
+     *
+     * @param userId 用户ID
+     * @return 是否成功
+     */
+    boolean enableUser(Long userId);
+
+    /**
+     * 判断用户是否被禁用
+     *
+     * @param userId 用户ID
+     * @return 是否被禁用
+     */
+    boolean isUserDisabled(Long userId);
+
+    /**
+     * 加密密码
+     *
+     * @param userPassword 用户明文密码
+     * @return 加密后的密码
+     */
+    String getEncryptPassword(String userPassword);
 }

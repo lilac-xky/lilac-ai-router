@@ -70,6 +70,24 @@ public class User implements Serializable {
     private String userRole;
 
     /**
+     * Token配额（-1表示无限制）
+     */
+    @Column("tokenQuota")
+    private Long tokenQuota;
+
+    /**
+     * 已使用Token数
+     */
+    @Column("usedTokens")
+    private Long usedTokens;
+
+    /**
+     * 用户状态：active-正常，disabled-禁用
+     */
+    @Column("userStatus")
+    private String userStatus;
+
+    /**
      * 编辑时间
      */
     @Column("editTime")

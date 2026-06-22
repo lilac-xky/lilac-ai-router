@@ -196,11 +196,55 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
     }
 
     /**
+     * 禁用用户
+     *
+     * @param userId 用户ID
+     * @return 是否成功
+     */
+    @Override
+    public boolean disableUser(Long userId) {
+        User user = new User();
+        user.setId(userId);
+        user.setUserStatus("disabled");
+        return this.updateById(user);
+    }
+
+    /**
+     * 启用用户
+     *
+     * @param userId 用户ID
+     * @return 是否成功
+     */
+    @Override
+    public boolean enableUser(Long userId) {
+        User user = new User();
+        user.setId(userId);
+        user.setUserStatus("active");
+        return this.updateById(user);
+    }
+
+    /**
+     * 判断用户是否被禁用
+     *
+     * @param userId 用户ID
+     * @return 是否被禁用
+     */
+    @Override
+    public boolean isUserDisabled(Long userId) {
+        if (userId == null) {
+            return false;
+        }
+        User user = this.getById(userId);
+        return user != null && "disabled".equals(user.getUserStatus());
+    }
+
+    /**
      * 加密密码
      *
      * @param userPassword 用户明文密码
      * @return 加密后的密码
      */
+    @Override
     public String getEncryptPassword(String userPassword) {
         return DigestUtil.md5Hex((SALT + userPassword).getBytes());
     }

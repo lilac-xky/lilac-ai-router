@@ -52,7 +52,7 @@ import { useRouter } from 'vue-router'
 import { type MenuProps, message } from 'ant-design-vue'
 import { useLoginUserStore } from '@/stores/loginUser.ts'
 import { userLogout } from '@/api/userController.ts'
-import { LogoutOutlined, HomeOutlined } from '@ant-design/icons-vue'
+import { LogoutOutlined, HomeOutlined, HistoryOutlined } from '@ant-design/icons-vue'
 
 const loginUserStore = useLoginUserStore()
 const router = useRouter()
@@ -77,6 +77,12 @@ const originItems = [
         title: 'API Key 管理',
     },
     {
+        key: '/user/history',
+        icon: () => h(HistoryOutlined),
+        label: '调用历史',
+        title: '调用历史',
+    },
+    {
         key: '/user/chat',
         label: '聊天',
         title: '聊天',
@@ -95,6 +101,11 @@ const originItems = [
         key: '/admin/blackList',
         label: '黑名单管理',
         title: '黑名单管理',
+    },
+    {
+        key: '/admin/user',
+        label: '用户管理',
+        title: '用户管理',
     },
 ]
 

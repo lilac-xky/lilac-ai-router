@@ -1,14 +1,15 @@
 import { createRouter, createWebHistory, RouterView } from 'vue-router'
 import { h } from 'vue'
-import HomePage from '@/views/Home.vue'
+import Profile from '@/views/user/Profile.vue'
+import CallHistory from '@/views/user/CallHistory.vue'
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
   routes: [
     {
       path: '/',
-      name: 'home',
-      component: HomePage,
+      name: '主页',
+      component: Profile,
     },
     {
       path: '/user/login',
@@ -19,6 +20,16 @@ const router = createRouter({
       path: '/user/register',
       name: 'userRegister',
       component: () => import('@/views/user/UserRegister.vue'),
+    },
+    {
+      path: '/user/profile',
+      name: '个人中心',
+      component: Profile,
+    },
+    {
+      path: '/user/history',
+      name: '调用历史',
+      component: CallHistory,
     },
     {
       path: '/user/apiKey',
@@ -52,6 +63,11 @@ const router = createRouter({
           path: 'blackList',
           name: '黑名单管理',
           component: () => import('@/views/admin/BlackManage.vue'),
+        },
+        {
+          path: 'user',
+          name: '用户管理',
+          component: () => import('@/views/admin/UserManager.vue'),
         }
       ]
     }

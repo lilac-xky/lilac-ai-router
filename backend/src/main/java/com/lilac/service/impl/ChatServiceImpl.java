@@ -11,11 +11,7 @@ import com.lilac.enums.HttpsCodeEnum;
 import com.lilac.enums.RoutingStrategyTypeEnum;
 import com.lilac.exception.BusinessException;
 import com.lilac.model.StreamResponse;
-import com.lilac.service.ChatService;
-import com.lilac.service.ModelInvokeService;
-import com.lilac.service.ModelProviderService;
-import com.lilac.service.RequestLogService;
-import com.lilac.service.RoutingService;
+import com.lilac.service.*;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -49,6 +45,10 @@ public class ChatServiceImpl implements ChatService {
     private ModelProviderService modelProviderService;
     @Resource
     private RequestLogService requestLogService;
+    @Resource
+    private UserService userService;
+    @Resource
+    private QuotaService quotaService;
 
     /**
      * 非流式聊天
@@ -63,6 +63,14 @@ public class ChatServiceImpl implements ChatService {
         long startTime = System.currentTimeMillis();
         String requestedModel = chatRequest.getModel();
 
+        // 检查用户状态
+        if (userId != null && userService.isUserDisabled(userId)) {
+            throw new BusinessException(HttpsCodeEnum.UNAUTHORIZED, "账号已被禁用，无法使用服务");
+        }
+        // 检查用户配额
+        if (userId != null && !quotaService.checkQuota(userId)) {
+            throw new BusinessException(HttpsCodeEnum.OPERATION_ERROR, "Token配额已用尽，请联系管理员增加配额");
+        }
         // 确定路由策略：优先使用请求中指定的策略，否则根据是否指定模型决定
         String strategyType = determineStrategyType(chatRequest.getRoutingStrategy(), requestedModel);
         // 选择主模型
@@ -72,7 +80,6 @@ public class ChatServiceImpl implements ChatService {
         }
         // 获取 Fallback 模型列表
         List<Model> fallbackModels = routingService.getFallbackModels(strategyType, MODEL_TYPE_CHAT, requestedModel);
-
         // 带 Fallback 的调用
         return invokeWithFallback(selectedModel, fallbackModels, chatRequest, userId, apiKeyId, startTime);
     }
@@ -88,8 +95,15 @@ public class ChatServiceImpl implements ChatService {
     @Override
     public Flux<StreamResponse> chatStream(ChatRequest chatRequest, Long userId, Long apiKeyId) {
         long startTime = System.currentTimeMillis();
+        // 检查用户状态
+        if (userId != null && userService.isUserDisabled(userId)) {
+            return Flux.error(new BusinessException(HttpsCodeEnum.UNAUTHORIZED, "账号已被禁用，无法使用服务"));
+        }
+        // 检查用户配额
+        if (userId != null && !quotaService.checkQuota(userId)) {
+            return Flux.error(new BusinessException(HttpsCodeEnum.OPERATION_ERROR, "Token配额已用尽，请联系管理员增加配额"));
+        }
         String requestedModel = chatRequest.getModel();
-
         String strategyType = determineStrategyType(chatRequest.getRoutingStrategy(), requestedModel);
         Model selectedModel = routingService.selectModel(strategyType, MODEL_TYPE_CHAT, requestedModel);
         if (selectedModel == null) {
@@ -145,13 +159,18 @@ public class ChatServiceImpl implements ChatService {
 
             long duration = System.currentTimeMillis() - startTime;
             ChatResponse.Usage usage = response.getUsage();
-            requestLogService.logRequest(userId, apiKeyId, model.getModelKey(),
-                    usage.getPromptTokens(), usage.getCompletionTokens(), usage.getTotalTokens(),
+            int totalTokens = usage.getTotalTokens();
+            requestLogService.logRequest(userId, apiKeyId, model.getId(), model.getModelKey(),
+                    usage.getPromptTokens(), usage.getCompletionTokens(), totalTokens,
                     (int) duration, "success", null);
+            // 扣减用户配额
+            if (userId != null && totalTokens > 0) {
+                quotaService.deductTokens(userId, totalTokens);
+            }
             return response;
         } catch (Exception e) {
             long duration = System.currentTimeMillis() - startTime;
-            requestLogService.logRequest(userId, apiKeyId, model.getModelKey(), 0, 0, 0,
+            requestLogService.logRequest(userId, apiKeyId, model.getId(), model.getModelKey(), 0, 0, 0,
                     (int) duration, "failed", e.getMessage());
             throw e;
         }
@@ -233,14 +252,14 @@ public class ChatServiceImpl implements ChatService {
                 .doOnComplete(() -> {
                     long duration = System.currentTimeMillis() - startTime;
                     int totalTokens = promptTokens[0] + completionTokens[0];
-                    requestLogService.logRequest(userId, apiKeyId, model.getModelKey(),
+                    requestLogService.logRequest(userId, apiKeyId, model.getId(), model.getModelKey(),
                             promptTokens[0], completionTokens[0], totalTokens,
                             (int) duration, "success", null);
                 })
                 .doOnError(error -> {
                     log.error("模型 {} 流式调用失败", model.getModelKey(), error);
                     long duration = System.currentTimeMillis() - startTime;
-                    requestLogService.logRequest(userId, apiKeyId, model.getModelKey(), 0, 0, 0,
+                    requestLogService.logRequest(userId, apiKeyId, model.getId(), model.getModelKey(), 0, 0, 0,
                             (int) duration, "failed", error.getMessage());
                 });
     }

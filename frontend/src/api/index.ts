@@ -9,6 +9,7 @@ import * as internalChatController from './internalChatController'
 import * as modelController from './modelController'
 import * as modelProviderController from './modelProviderController'
 import * as blacklistController from './blacklistController'
+import * as statsController from './statsController'
 export default {
   userController,
   chatController,
@@ -17,4 +18,5 @@ export default {
   modelController,
   modelProviderController,
   blacklistController,
+  statsController,
 }
