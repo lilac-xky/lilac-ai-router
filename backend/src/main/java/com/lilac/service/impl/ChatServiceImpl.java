@@ -17,6 +17,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 
+import java.math.BigDecimal;
 import java.util.List;
 
 /**
@@ -49,6 +50,10 @@ public class ChatServiceImpl implements ChatService {
     private UserService userService;
     @Resource
     private QuotaService quotaService;
+    @Resource
+    private BillingService billingService;
+    @Resource
+    private BalanceService balanceService;
 
     /**
      * 非流式聊天
@@ -70,6 +75,10 @@ public class ChatServiceImpl implements ChatService {
         // 检查用户配额
         if (userId != null && !quotaService.checkQuota(userId)) {
             throw new BusinessException(HttpsCodeEnum.OPERATION_ERROR, "Token配额已用尽，请联系管理员增加配额");
+        }
+        // 检查用户余额（费用在调用后才能精确计算，此处先做余额是否为正的前置校验）
+        if (userId != null && balanceService.getUserBalance(userId).compareTo(BigDecimal.ZERO) <= 0) {
+            throw new BusinessException(HttpsCodeEnum.UNAUTHORIZED, "余额不足，请先充值");
         }
         // 确定路由策略：优先使用请求中指定的策略，否则根据是否指定模型决定
         String strategyType = determineStrategyType(chatRequest.getRoutingStrategy(), requestedModel);
@@ -102,6 +111,10 @@ public class ChatServiceImpl implements ChatService {
         // 检查用户配额
         if (userId != null && !quotaService.checkQuota(userId)) {
             return Flux.error(new BusinessException(HttpsCodeEnum.OPERATION_ERROR, "Token配额已用尽，请联系管理员增加配额"));
+        }
+        // 检查用户余额（在流开始前完成，此时响应尚未提交，可正常返回 JSON 错误）
+        if (userId != null && balanceService.getUserBalance(userId).compareTo(BigDecimal.ZERO) <= 0) {
+            return Flux.error(new BusinessException(HttpsCodeEnum.UNAUTHORIZED, "余额不足，请先充值"));
         }
         String requestedModel = chatRequest.getModel();
         String strategyType = determineStrategyType(chatRequest.getRoutingStrategy(), requestedModel);
@@ -163,9 +176,10 @@ public class ChatServiceImpl implements ChatService {
             requestLogService.logRequest(userId, apiKeyId, model.getId(), model.getModelKey(),
                     usage.getPromptTokens(), usage.getCompletionTokens(), totalTokens,
                     (int) duration, "success", null);
-            // 扣减用户配额
+            // 扣减用户配额与余额
             if (userId != null && totalTokens > 0) {
                 quotaService.deductTokens(userId, totalTokens);
+                deductBalance(userId, apiKeyId, model, usage.getPromptTokens(), usage.getCompletionTokens(), false);
             }
             return response;
         } catch (Exception e) {
@@ -190,7 +204,6 @@ public class ChatServiceImpl implements ChatService {
         // Token 计数器（流式通常只有最后一个 chunk 携带 usage）
         final int[] promptTokens = {0};
         final int[] completionTokens = {0};
-
         return modelInvokeService.invokeStreamChunk(model, provider, chatRequest)
                 .flatMap(chunk -> {
                     if (chunk.getPromptTokens() != null && chunk.getPromptTokens() > 0) {
@@ -219,13 +232,11 @@ public class ChatServiceImpl implements ChatService {
                     if (chunk.hasReasoningContent()) {
                         deltaBuilder.reasoningContent(chunk.getReasoningContent());
                     }
-
                     StreamResponse.StreamChoice choice = StreamResponse.StreamChoice.builder()
                             .index(0)
                             .delta(deltaBuilder.build())
                             .finishReason(null)  // 未结束时为 null
                             .build();
-
                     return Flux.just(StreamResponse.builder()
                             .id(traceId)
                             .object("chat.completion.chunk")
@@ -255,6 +266,18 @@ public class ChatServiceImpl implements ChatService {
                     requestLogService.logRequest(userId, apiKeyId, model.getId(), model.getModelKey(),
                             promptTokens[0], completionTokens[0], totalTokens,
                             (int) duration, "success", null);
+                    // 扣减用户配额和余额
+                    if (userId != null && totalTokens > 0) {
+                        quotaService.deductTokens(userId, totalTokens);
+                        // 响应已通过 SSE 返回且连接已提交，此处扣费失败不能再向客户端抛错，
+                        // 否则会触发 HttpMessageNotWritableException（无法将 Result 写入 text/event-stream）。
+                        // 余额已在流开始前做过前置校验，正常情况下不会失败；并发耗尽时仅记录欠费日志。
+                        try {
+                            deductBalance(userId, apiKeyId, model, promptTokens[0], completionTokens[0], true);
+                        } catch (Exception e) {
+                            log.error("流式调用扣减余额失败，用户 {} 可能产生欠费", userId, e);
+                        }
+                    }
                 })
                 .doOnError(error -> {
                     log.error("模型 {} 流式调用失败", model.getModelKey(), error);
@@ -262,6 +285,28 @@ public class ChatServiceImpl implements ChatService {
                     requestLogService.logRequest(userId, apiKeyId, model.getId(), model.getModelKey(), 0, 0, 0,
                             (int) duration, "failed", error.getMessage());
                 });
+    }
+
+    /**
+     * 计算本次调用费用并扣减用户余额（费用为 0 时不扣减，也不记录账单）
+     *
+     * @param userId           用户ID
+     * @param apiKeyId         API密钥ID（用于区分 API/网页来源）
+     * @param model            实际调用的模型
+     * @param promptTokens     提示词Token数
+     * @param completionTokens 完成词Token数
+     * @param stream           是否为流式调用（仅影响账单描述）
+     */
+    private void deductBalance(Long userId, Long apiKeyId, Model model, int promptTokens, int completionTokens, boolean stream) {
+        BigDecimal cost = billingService.calculateCost(model, promptTokens, completionTokens);
+        if (cost.compareTo(BigDecimal.ZERO) <= 0) {
+            return;
+        }
+        // 根据来源区分账单描述
+        String channel = apiKeyId != null ? "API调用消费" : "网页调用消费";
+        String suffix = stream ? "（流式）" : "";
+        String description = channel + suffix + " - " + model.getModelKey();
+        balanceService.deductBalance(userId, cost, null, description);
     }
 
     /**

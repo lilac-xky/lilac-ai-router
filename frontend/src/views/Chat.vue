@@ -394,7 +394,18 @@ async function sendCompletion() {
         )
 
         if (!response.ok) {
-            throw new Error(`HTTP error! status: ${response.status}`)
+            // 错误响应为统一结构的 JSON（{ code, msg, data }），优先展示后端返回的 msg
+            let errMsg = `请求失败（${response.status}）`
+            try {
+                const text = await response.text()
+                if (text) {
+                    const body = JSON.parse(text)
+                    if (body?.msg) errMsg = body.msg
+                }
+            } catch {
+                // 响应体非 JSON 时，沿用默认提示
+            }
+            throw new Error(errMsg)
         }
 
         const reader = response.body?.getReader()

@@ -21,6 +21,36 @@ declare namespace API {
     createTime?: string
   }
 
+  type BalanceVO = {
+    /** 当前余额 */
+    balance?: number
+    /** 总消费 */
+    totalSpending?: number
+    /** 总充值 */
+    totalRecharge?: number
+  }
+
+  type BillingRecord = {
+    /** id */
+    id?: number
+    /** 用户id */
+    userId?: number
+    /** 关联的请求日志ID */
+    requestLogId?: number
+    /** 消费金额（元） */
+    amount?: number
+    /** 消费前余额（元） */
+    balanceBefore?: number
+    /** 消费后余额（元） */
+    balanceAfter?: number
+    /** 消费说明 */
+    description?: string
+    /** 账单类型：api_call/recharge/refund */
+    billingType?: string
+    /** 创建时间 */
+    createTime?: string
+  }
+
   type BlacklistRequest = {
     /** IP 地址 */
     ip?: string
@@ -77,6 +107,11 @@ declare namespace API {
     todayCost?: number
   }
 
+  type CreateRechargeRequest = {
+    /** 充值金额（元） */
+    amount?: number
+  }
+
   type DeleteRequest = {
     /** id */
     id?: number
@@ -97,11 +132,25 @@ declare namespace API {
     id: number
   }
 
+  type getMyBillingRecordsParams = {
+    /** 页码 */
+    pageNum: number
+    /** 页大小 */
+    pageSize: number
+  }
+
   type getMyDailyStatsParams = {
     /** 开始日期 */
     startDate?: string
     /** 结束日期 */
     endDate?: string
+  }
+
+  type getMyRechargeRecordsParams = {
+    /** 页码 */
+    pageNum: number
+    /** 每页数量 */
+    pageSize: number
   }
 
   type getMyTokenStatsParams = {
@@ -272,6 +321,16 @@ declare namespace API {
     optimizeCountQuery?: boolean
   }
 
+  type PageBillingRecord = {
+    records?: BillingRecord[]
+    pageNumber?: number
+    pageSize?: number
+    maxPageSize?: number
+    totalPage?: number
+    totalRow?: number
+    optimizeCountQuery?: boolean
+  }
+
   type PageModelVO = {
     records?: ModelVO[]
     pageNumber?: number
@@ -284,6 +343,16 @@ declare namespace API {
 
   type PageProviderVO = {
     records?: ProviderVO[]
+    pageNumber?: number
+    pageSize?: number
+    maxPageSize?: number
+    totalPage?: number
+    totalRow?: number
+    optimizeCountQuery?: boolean
+  }
+
+  type PageRechargeRecord = {
+    records?: RechargeRecord[]
     pageNumber?: number
     pageSize?: number
     maxPageSize?: number
@@ -397,6 +466,34 @@ declare namespace API {
     tokenQuota?: number
   }
 
+  type RechargeRecord = {
+    /** id */
+    id?: number
+    /** 用户id */
+    userId?: number
+    /** 充值金额（元） */
+    amount?: number
+    /** 支付方式：stripe/alipay/wechat */
+    paymentMethod?: string
+    /** 第三方支付ID */
+    paymentId?: string
+    /** 状态：pending/success/failed/refunded */
+    status?: string
+    /** 充值说明 */
+    description?: string
+    /** 创建时间 */
+    createTime?: string
+    /** 更新时间 */
+    updateTime?: string
+  }
+
+  type RechargeVO = {
+    /** Stripe支付页面URL */
+    checkoutUrl?: string
+    /** Stripe会话ID */
+    sessionId?: string
+  }
+
   type RequestLog = {
     id?: number
     /** 用户id */
@@ -457,6 +554,12 @@ declare namespace API {
     data?: ApiKeyVO
   }
 
+  type ResultBalanceVO = {
+    code?: number
+    msg?: string
+    data?: BalanceVO
+  }
+
   type ResultBoolean = {
     code?: number
     msg?: string
@@ -499,6 +602,12 @@ declare namespace API {
     data?: PageApiKeyVO
   }
 
+  type ResultPageBillingRecord = {
+    code?: number
+    msg?: string
+    data?: PageBillingRecord
+  }
+
   type ResultPageModelVO = {
     code?: number
     msg?: string
@@ -509,6 +618,12 @@ declare namespace API {
     code?: number
     msg?: string
     data?: PageProviderVO
+  }
+
+  type ResultPageRechargeRecord = {
+    code?: number
+    msg?: string
+    data?: PageRechargeRecord
   }
 
   type ResultPageRequestLog = {
@@ -523,6 +638,12 @@ declare namespace API {
     data?: PageUserVO
   }
 
+  type ResultRechargeVO = {
+    code?: number
+    msg?: string
+    data?: RechargeVO
+  }
+
   type ResultRequestLog = {
     code?: number
     msg?: string
@@ -535,6 +656,12 @@ declare namespace API {
     data?: string[]
   }
 
+  type ResultString = {
+    code?: number
+    msg?: string
+    data?: string
+  }
+
   type ResultUserAnalysisVO = {
     code?: number
     msg?: string
@@ -545,6 +672,11 @@ declare namespace API {
     code?: number
     msg?: string
     data?: UserSummaryStatsVO
+  }
+
+  type stripeSuccessParams = {
+    /** Stripe会话ID */
+    session_id: string
   }
 
   type Usage = {

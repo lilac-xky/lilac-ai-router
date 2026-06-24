@@ -110,6 +110,13 @@
             <version>5.8.44</version>
         </dependency>
 
+        <!-- Stripe 支付 SDK -->
+        <dependency>
+            <groupId>com.stripe</groupId>
+            <artifactId>stripe-java</artifactId>
+            <version>31.2.0</version>
+        </dependency>
+
         <dependency>
             <groupId>com.lilac</groupId>
             <artifactId>lilac-ai-router-sdk</artifactId>

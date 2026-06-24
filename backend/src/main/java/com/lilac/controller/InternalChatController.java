@@ -76,10 +76,10 @@ public class InternalChatController {
         // 判断是否为流式请求
         Boolean stream = request.getStream();
         if (stream != null && stream) {
-            // 流式响应：将每个 StreamResponse 序列化为 SSE 数据行
+            // 流式响应：仅返回 JSON 负载，由 Spring 的 SSE 处理器自动添加 data: 前缀与分隔符，避免重复封装
             return chatService.chatStream(request, apiKey.getUserId(), apiKey.getId())
                     .map(this::toSseData)
-                    .concatWith(reactor.core.publisher.Flux.just("data: [DONE]\n\n"));
+                    .concatWith(reactor.core.publisher.Flux.just("[DONE]"));
         } else {
             // 非流式响应
             ChatResponse response = chatService.chat(request, loginUser.getId(), apiKey.getId());
@@ -88,11 +88,12 @@ public class InternalChatController {
     }
 
     /**
-     * 将结构化的流式响应序列化为 SSE 数据行（data: {json}\n\n）
+     * 将结构化的流式响应序列化为 JSON 字符串。
+     * SSE 的 data: 前缀与 \n\n 分隔符由 Spring 的 text/event-stream 处理器自动添加，此处不再手动封装。
      */
     private String toSseData(com.lilac.model.StreamResponse streamResponse) {
         try {
-            return "data: " + objectMapper.writeValueAsString(streamResponse) + "\n\n";
+            return objectMapper.writeValueAsString(streamResponse);
         } catch (Exception e) {
             log.error("序列化流式响应失败", e);
             return "";

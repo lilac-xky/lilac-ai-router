@@ -10,6 +10,9 @@ import * as modelController from './modelController'
 import * as modelProviderController from './modelProviderController'
 import * as blacklistController from './blacklistController'
 import * as statsController from './statsController'
+import * as balanceController from './balanceController'
+import * as rechargeController from './rechargeController'
+import * as stripeWebhookController from './stripeWebhookController'
 export default {
   userController,
   chatController,
@@ -19,4 +22,7 @@ export default {
   modelProviderController,
   blacklistController,
   statsController,
+  balanceController,
+  rechargeController,
+  stripeWebhookController,
 }
