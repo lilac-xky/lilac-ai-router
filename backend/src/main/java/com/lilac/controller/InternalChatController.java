@@ -1,8 +1,8 @@
 package com.lilac.controller;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.lilac.anonation.AuthCheck;
-import com.lilac.anonation.RateLimit;
+import com.lilac.annotation.AuthCheck;
+import com.lilac.annotation.RateLimit;
 import com.lilac.constant.UserConstant;
 import com.lilac.domain.dto.chat.ChatRequest;
 import com.lilac.domain.dto.chat.ChatResponse;

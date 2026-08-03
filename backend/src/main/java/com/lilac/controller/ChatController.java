@@ -1,6 +1,6 @@
 package com.lilac.controller;
 
-import com.lilac.anonation.RateLimit;
+import com.lilac.annotation.RateLimit;
 import com.lilac.domain.dto.chat.ChatRequest;
 import com.lilac.domain.entity.ApiKey;
 import com.lilac.enums.HttpsCodeEnum;

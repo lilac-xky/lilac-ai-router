@@ -19,6 +19,18 @@ import java.util.List;
 public class ModelServiceImpl extends ServiceImpl<ModelMapper, Model> implements ModelService {
 
     /**
+     * 根据模型Key获取模型
+     *
+     * @param modelKey 模型Key
+     * @return 模型
+     */
+    @Override
+    public Model getByModelKey(String modelKey) {
+        QueryWrapper queryWrapper = QueryWrapper.create().eq("modelKey", modelKey);
+        return getOne(queryWrapper);
+    }
+
+    /**
      * 获取所有启用的模型
      *
      * @return 模型列表

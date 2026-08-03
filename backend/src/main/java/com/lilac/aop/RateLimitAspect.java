@@ -1,7 +1,7 @@
 package com.lilac.aop;
 
 import cn.hutool.extra.servlet.JakartaServletUtil;
-import com.lilac.anonation.RateLimit;
+import com.lilac.annotation.RateLimit;
 import com.lilac.enums.HttpsCodeEnum;
 import com.lilac.exception.BusinessException;
 import com.lilac.service.RateLimitService;

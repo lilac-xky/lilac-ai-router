@@ -2,7 +2,7 @@ package com.lilac.controller;
 
 import cn.hutool.core.bean.BeanUtil;
 import cn.hutool.core.util.StrUtil;
-import com.lilac.anonation.AuthCheck;
+import com.lilac.annotation.AuthCheck;
 import com.lilac.common.DeleteRequest;
 import com.lilac.constant.UserConstant;
 import com.lilac.domain.dto.user.UserAddRequest;
@@ -15,7 +15,6 @@ import com.lilac.domain.result.Result;
 import com.lilac.domain.vo.LoginUserVO;
 import com.lilac.domain.vo.UserVO;
 import com.lilac.enums.HttpsCodeEnum;
-import com.lilac.exception.BusinessException;
 import com.lilac.service.UserService;
 import com.lilac.utils.ThrowUtils;
 import com.mybatisflex.core.paginate.Page;
@@ -28,6 +27,8 @@ import org.springframework.web.bind.annotation.*;
 import java.util.List;
 import java.util.stream.Collectors;
 
+import static com.lilac.constant.UserConstant.DEFAULT_PASSWORD;
+
 /**
  * 用户接口
  */
@@ -38,11 +39,6 @@ public class UserController {
 
     @Resource
     private UserService userService;
-
-    /**
-     * 新增用户默认密码
-     */
-    private static final String DEFAULT_PASSWORD = "12345678";
 
     /**
      * 用户注册

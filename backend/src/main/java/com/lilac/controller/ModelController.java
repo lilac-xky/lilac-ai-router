@@ -3,7 +3,7 @@ package com.lilac.controller;
 import cn.hutool.core.bean.BeanUtil;
 import cn.hutool.core.collection.CollUtil;
 import cn.hutool.core.util.StrUtil;
-import com.lilac.anonation.AuthCheck;
+import com.lilac.annotation.AuthCheck;
 import com.lilac.common.DeleteRequest;
 import com.lilac.constant.UserConstant;
 import com.lilac.domain.dto.model.ModelAddRequest;

@@ -1,6 +1,6 @@
 package com.lilac.controller;
 
-import com.lilac.anonation.AuthCheck;
+import com.lilac.annotation.AuthCheck;
 import com.lilac.constant.UserConstant;
 import com.lilac.domain.result.Result;
 import com.lilac.service.BlacklistService;

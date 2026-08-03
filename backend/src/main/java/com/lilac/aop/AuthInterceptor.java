@@ -1,6 +1,6 @@
 package com.lilac.aop;
 
-import com.lilac.anonation.AuthCheck;
+import com.lilac.annotation.AuthCheck;
 import com.lilac.domain.entity.User;
 import com.lilac.enums.HttpsCodeEnum;
 import com.lilac.enums.UserRoleEnum;

@@ -153,6 +153,11 @@ declare namespace API {
     pageSize: number
   }
 
+  type getMyRecordsParams = {
+    pageNum: number
+    pageSize: number
+  }
+
   type getMyTokenStatsParams = {
     /** API Key ID（可选） */
     apiKeyId?: number
@@ -161,6 +166,76 @@ declare namespace API {
   type getUserAnalysisParams = {
     /** 用户ID */
     userId: number
+  }
+
+  type ImageData = {
+    /** 图片URL */
+    url?: string
+    /** Base64编码的图片数据 */
+    b64Json?: string
+    /** 修订后的提示词 */
+    revisedPrompt?: string
+  }
+
+  type ImageGenerationRecord = {
+    /** id */
+    id?: number
+    /** 用户id */
+    userId?: number
+    /** API Key id */
+    apiKeyId?: number
+    /** 使用的模型id */
+    modelId?: number
+    /** 模型标识 */
+    modelKey?: string
+    /** 生成提示词 */
+    prompt?: string
+    /** 修订后的提示词 */
+    revisedPrompt?: string
+    /** 图片URL */
+    imageUrl?: string
+    /** Base64图片数据 */
+    imageData?: string
+    /** 图片尺寸 */
+    size?: string
+    /** 图片质量 */
+    quality?: string
+    /** 状态：success/failed */
+    status?: string
+    /** 生成费用（元） */
+    cost?: number
+    /** 耗时（毫秒） */
+    duration?: number
+    /** 错误信息 */
+    errorMessage?: string
+    /** 客户端IP */
+    clientIp?: string
+    /** 创建时间 */
+    createTime?: string
+  }
+
+  type ImageGenerationRequest = {
+    /** 生成图片数量（默认1） */
+    n?: number
+    /** 响应格式（url/b64_json） */
+    response_format?: string
+    /** 提示词 */
+    prompt?: string
+    /** 模型名称（默认 qwen-image-plus） */
+    model?: string
+    /** 图片尺寸（如 1024x1024） */
+    size?: string
+    /** 图片质量（standard/hd） */
+    quality?: string
+    /** 用户标识 */
+    user?: string
+  }
+
+  type ImageGenerationResponse = {
+    /** 创建时间戳 */
+    created?: number
+    /** 图片数据列表 */
+    data?: ImageData[]
   }
 
   type key = {}
@@ -323,6 +398,16 @@ declare namespace API {
 
   type PageBillingRecord = {
     records?: BillingRecord[]
+    pageNumber?: number
+    pageSize?: number
+    maxPageSize?: number
+    totalPage?: number
+    totalRow?: number
+    optimizeCountQuery?: boolean
+  }
+
+  type PageImageGenerationRecord = {
+    records?: ImageGenerationRecord[]
     pageNumber?: number
     pageSize?: number
     maxPageSize?: number
@@ -606,6 +691,12 @@ declare namespace API {
     code?: number
     msg?: string
     data?: PageBillingRecord
+  }
+
+  type ResultPageImageGenerationRecord = {
+    code?: number
+    msg?: string
+    data?: PageImageGenerationRecord
   }
 
   type ResultPageModelVO = {

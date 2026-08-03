@@ -13,6 +13,7 @@ import * as statsController from './statsController'
 import * as balanceController from './balanceController'
 import * as rechargeController from './rechargeController'
 import * as stripeWebhookController from './stripeWebhookController'
+import * as imageController from './imageController'
 export default {
   userController,
   chatController,
@@ -25,4 +26,5 @@ export default {
   balanceController,
   rechargeController,
   stripeWebhookController,
+  imageController,
 }

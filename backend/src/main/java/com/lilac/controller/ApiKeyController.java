@@ -1,7 +1,7 @@
 package com.lilac.controller;
 
 import cn.hutool.core.bean.BeanUtil;
-import com.lilac.anonation.AuthCheck;
+import com.lilac.annotation.AuthCheck;
 import com.lilac.common.DeleteRequest;
 import com.lilac.constant.UserConstant;
 import com.lilac.domain.dto.api.ApiKeyCreateRequest;
@@ -15,7 +15,6 @@ import com.lilac.service.ApiKeyService;
 import com.lilac.service.UserService;
 import com.mybatisflex.core.paginate.Page;
 import com.mybatisflex.core.query.QueryWrapper;
-import io.swagger.v3.oas.annotations.Operation;
 import jakarta.annotation.Resource;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.extern.slf4j.Slf4j;

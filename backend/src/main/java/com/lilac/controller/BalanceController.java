@@ -1,6 +1,6 @@
 package com.lilac.controller;
 
-import com.lilac.anonation.AuthCheck;
+import com.lilac.annotation.AuthCheck;
 import com.lilac.constant.UserConstant;
 import com.lilac.domain.entity.BillingRecord;
 import com.lilac.domain.entity.User;

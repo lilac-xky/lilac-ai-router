@@ -1,4 +1,4 @@
-package com.lilac.anonation;
+package com.lilac.annotation;
 
 import java.lang.annotation.*;
 import java.util.concurrent.TimeUnit;

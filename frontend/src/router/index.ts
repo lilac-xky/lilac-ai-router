@@ -4,6 +4,7 @@ import Profile from '@/views/user/Profile.vue'
 import CallHistory from '@/views/user/CallHistory.vue'
 import RechargeSuccess from '@/views/user/RechargeSuccess.vue'
 import RechargeCancel from '@/views/user/RechargeCancel.vue'
+import ImageGeneration from '@/views/user/ImageGeneration.vue'
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
@@ -51,6 +52,11 @@ const router = createRouter({
       path: '/recharge/cancel',
       name: '充值取消',
       component: () => RechargeCancel,
+    },
+    {
+      path: '/user/imageGeneration',
+      name: 'AI绘图',
+      component: ImageGeneration,
     },
     {
       path: '/admin',

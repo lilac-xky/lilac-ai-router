@@ -28,4 +28,12 @@ public interface ModelService extends IService<Model> {
      * @param score        综合得分（越低越好）
      */
     void updateModelMetrics(Long modelId, String healthStatus, Integer avgLatency, BigDecimal successRate, BigDecimal score);
+
+
+    /**
+     *
+     * @param modelKey 模型key
+     * @return model
+     */
+    Model getByModelKey(String modelKey);
 }

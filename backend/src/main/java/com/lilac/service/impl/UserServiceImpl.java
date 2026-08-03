@@ -18,6 +18,7 @@ import com.mybatisflex.spring.service.impl.ServiceImpl;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.stereotype.Service;
 
+import static com.lilac.constant.UserConstant.SALT;
 import static com.lilac.constant.UserConstant.USER_LOGIN_STATE;
 
 /**
@@ -25,11 +26,6 @@ import static com.lilac.constant.UserConstant.USER_LOGIN_STATE;
  */
 @Service
 public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements UserService {
-
-    /**
-     * 加密盐值，混淆密码
-     */
-    private static final String SALT = "lilac";
 
     /**
      * 用户注册
