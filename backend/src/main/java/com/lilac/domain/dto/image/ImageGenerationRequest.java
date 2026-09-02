@@ -30,7 +30,6 @@ public class ImageGenerationRequest implements Serializable {
     /**
      * 生成图片数量（默认1）
      */
-    @JsonProperty("n")
     private Integer n;
 
     /**
@@ -46,7 +45,6 @@ public class ImageGenerationRequest implements Serializable {
     /**
      * 响应格式（url/b64_json）
      */
-    @JsonProperty("response_format")
     private String responseFormat;
 
     /**

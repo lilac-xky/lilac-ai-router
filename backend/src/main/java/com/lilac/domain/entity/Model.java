@@ -20,7 +20,7 @@ import java.util.Date;
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-@Table("model")
+@Table(value = "model", camelToUnderline = false)
 public class Model {
 
     /**
@@ -32,120 +32,101 @@ public class Model {
     /**
      * 提供者id
      */
-    @Column(value = "providerId")
     private Long providerId;
 
     /**
      * 模型标识（如：qwen-plus）
      */
-    @Column(value = "modelKey")
     private String modelKey;
 
     /**
      * 模型显示名称
      */
-    @Column(value = "modelName")
     private String modelName;
 
     /**
      * 模型类型：chat/embedding/image/audio
      */
-    @Column(value = "modelType")
     private String modelType;
 
     /**
      * 模型描述
      */
-    @Column(value = "description")
     private String description;
 
     /**
      * 上下文长度限制
      */
-    @Column(value = "contextLength")
     private Integer contextLength;
 
     /**
      * 输入价格（元/千Token）
      */
-    @Column(value = "inputPrice")
     private BigDecimal inputPrice;
 
     /**
      * 输出价格（元/千Token）
      */
-    @Column(value = "outputPrice")
     private BigDecimal outputPrice;
 
     /**
      * 状态：active/inactive/deprecated
      */
-    @Column(value = "status")
     private String status;
 
     /**
      * 健康状态：healthy/unhealthy/degraded/unknown
      */
-    @Column(value = "healthStatus")
     private String healthStatus;
 
     /**
      * 平均延迟（毫秒）
      */
-    @Column(value = "avgLatency")
     private Integer avgLatency;
 
     /**
      * 成功率（百分比）
      */
-    @Column(value = "successRate")
     private BigDecimal successRate;
 
     /**
      * 综合得分（越低越好）
      */
-    @Column(value = "score")
     private BigDecimal score;
 
     /**
      * 优先级（越大越优先）
      */
-    @Column(value = "priority")
     private Integer priority;
 
     /**
      * 默认超时时间（毫秒）
      */
-    @Column(value = "defaultTimeout")
     private Integer defaultTimeout;
 
     /**
      * 是否支持深度思考：0=不支持，1=支持
      */
-    @Column(value = "supportReasoning")
     private Integer supportReasoning;
 
     /**
      * 能力标签（JSON数组）
      */
-    @Column(value = "capabilities")
     private String capabilities;
 
     /**
      * 创建时间
      */
-    @Column(value = "createTime")
     private Date createTime;
 
     /**
      * 更新时间
      */
-    @Column(value = "updateTime")
     private Date updateTime;
 
     /**
      * 是否删除
      */
-    @Column(value = "isDelete", isLogicDelete = true)
+    @Column(isLogicDelete = true)
     private Integer isDelete;
 }

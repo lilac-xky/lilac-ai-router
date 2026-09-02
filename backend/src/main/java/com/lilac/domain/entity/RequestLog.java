@@ -22,7 +22,7 @@ import java.time.LocalDateTime;
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-@Table("request_log")
+@Table(value = "request_log", camelToUnderline = false)
 public class RequestLog implements Serializable {
 
     @Serial
@@ -34,72 +34,60 @@ public class RequestLog implements Serializable {
     /**
      * 用户id
      */
-    @Column(value = "userId")
     private Long userId;
 
     /**
      * API Key id
      */
-    @Column(value = "apiKeyId")
     private Long apiKeyId;
 
     /**
      * 使用的模型名称
      */
-    @Column(value = "modelName")
     private String modelName;
 
     /**
      * 输入Token数
      */
-    @Column(value = "promptTokens")
     private Integer promptTokens;
 
     /**
      * 输出Token数
      */
-    @Column(value = "completionTokens")
     private Integer completionTokens;
 
     /**
      * 总Token数
      */
-    @Column(value = "totalTokens")
     private Integer totalTokens;
 
     /**
      * 请求耗时（毫秒）
      */
-    @Column(value = "duration")
     private Integer duration;
 
     /**
      * 状态：success/failed
      */
-    @Column(value = "status")
     private String status;
 
     /**
      * 错误信息
      */
-    @Column(value = "errorMessage")
     private String errorMessage;
 
     /**
      * 本次请求费用（元）
      */
-    @Column(value = "cost")
     private BigDecimal cost;
 
     /**
      * 创建时间
      */
-    @Column(value = "createTime")
     private LocalDateTime createTime;
 
     /**
      * 更新时间
      */
-    @Column(value = "updateTime")
     private LocalDateTime updateTime;
 }

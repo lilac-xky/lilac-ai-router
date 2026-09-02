@@ -22,7 +22,7 @@ import java.time.LocalDateTime;
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-@Table("user")
+@Table(value = "user", camelToUnderline = false)
 public class User implements Serializable {
 
     @Serial
@@ -37,85 +37,72 @@ public class User implements Serializable {
     /**
      * 账号
      */
-    @Column("userAccount")
     private String userAccount;
 
     /**
      * 密码
      */
-    @Column("userPassword")
     private String userPassword;
 
     /**
      * 用户昵称
      */
-    @Column("userName")
     private String userName;
 
     /**
      * 用户头像
      */
-    @Column("userAvatar")
     private String userAvatar;
 
     /**
      * 用户简介
      */
-    @Column("userProfile")
     private String userProfile;
 
     /**
      * 用户角色：user/admin
      */
-    @Column("userRole")
     private String userRole;
 
     /**
      * Token配额（-1表示无限制）
      */
-    @Column("tokenQuota")
     private Long tokenQuota;
 
     /**
      * 已使用Token数
      */
-    @Column("usedTokens")
     private Long usedTokens;
 
     /**
      * 账户余额（元）
      */
-    @Column("balance")
     private BigDecimal balance;
 
     /**
      * 用户状态：active-正常，disabled-禁用
      */
-    @Column("userStatus")
     private String userStatus;
 
     /**
      * 编辑时间
      */
-    @Column("editTime")
     private LocalDateTime editTime;
 
     /**
      * 创建时间
      */
-    @Column("createTime")
     private LocalDateTime createTime;
 
     /**
      * 更新时间
      */
-    @Column("updateTime")
     private LocalDateTime updateTime;
 
     /**
      * 是否删除
      */
-    @Column(value = "isDelete", isLogicDelete = true)
+    @Column(isLogicDelete = true)
     private Integer isDelete;
 
 }
