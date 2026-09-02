@@ -33,3 +33,5 @@ build/
 .vscode/
 
 backend/src/main/resources/application-dev.yml
+
+docs/ONBOARDING.md
