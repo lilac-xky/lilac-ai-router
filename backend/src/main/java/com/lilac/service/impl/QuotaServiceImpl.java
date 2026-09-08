@@ -23,7 +23,7 @@ public class QuotaServiceImpl implements QuotaService {
     private static final long UNLIMITED_QUOTA = -1L;
 
     /**
-     * 扣减用户的Token使用量
+     * 检查用户是否有足够的配额
      *
      * @param userId 用户ID
      */
@@ -50,7 +50,7 @@ public class QuotaServiceImpl implements QuotaService {
     }
 
     /**
-     * 获取用户剩余配额
+     * 扣减用户的Token使用量
      *
      * @param userId 用户ID
      * @param tokens 扣减的Token数量

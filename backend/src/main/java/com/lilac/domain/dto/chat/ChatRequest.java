@@ -39,6 +39,7 @@ public class ChatRequest implements Serializable {
     /**
      * 最大生成Token数
      */
+    @JsonProperty("max_tokens")
     private Integer maxTokens;
 
     /**
