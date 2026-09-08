@@ -54,6 +54,8 @@ public class ChatServiceImpl implements ChatService {
     private BillingService billingService;
     @Resource
     private BalanceService balanceService;
+    @Resource
+    private UserProviderKeyService userProviderKeyService;
 
     /**
      * 非流式聊天
@@ -71,14 +73,6 @@ public class ChatServiceImpl implements ChatService {
         // 检查用户状态
         if (userId != null && userService.isUserDisabled(userId)) {
             throw new BusinessException(HttpsCodeEnum.UNAUTHORIZED, "账号已被禁用，无法使用服务");
-        }
-        // 检查用户配额
-        if (userId != null && !quotaService.checkQuota(userId)) {
-            throw new BusinessException(HttpsCodeEnum.OPERATION_ERROR, "Token配额已用尽，请联系管理员增加配额");
-        }
-        // 检查用户余额（费用在调用后才能精确计算，此处先做余额是否为正的前置校验）
-        if (userId != null && balanceService.getUserBalance(userId).compareTo(BigDecimal.ZERO) <= 0) {
-            throw new BusinessException(HttpsCodeEnum.UNAUTHORIZED, "余额不足，请先充值");
         }
         // 确定路由策略：优先使用请求中指定的策略，否则根据是否指定模型决定
         String strategyType = determineStrategyType(chatRequest.getRoutingStrategy(), requestedModel);
@@ -107,14 +101,6 @@ public class ChatServiceImpl implements ChatService {
         // 检查用户状态
         if (userId != null && userService.isUserDisabled(userId)) {
             return Flux.error(new BusinessException(HttpsCodeEnum.UNAUTHORIZED, "账号已被禁用，无法使用服务"));
-        }
-        // 检查用户配额
-        if (userId != null && !quotaService.checkQuota(userId)) {
-            return Flux.error(new BusinessException(HttpsCodeEnum.OPERATION_ERROR, "Token配额已用尽，请联系管理员增加配额"));
-        }
-        // 检查用户余额（在流开始前完成，此时响应尚未提交，可正常返回 JSON 错误）
-        if (userId != null && balanceService.getUserBalance(userId).compareTo(BigDecimal.ZERO) <= 0) {
-            return Flux.error(new BusinessException(HttpsCodeEnum.UNAUTHORIZED, "余额不足，请先充值"));
         }
         String requestedModel = chatRequest.getModel();
         String strategyType = determineStrategyType(chatRequest.getRoutingStrategy(), requestedModel);
@@ -165,9 +151,10 @@ public class ChatServiceImpl implements ChatService {
      * 调用单个模型（非流式），并记录请求日志
      */
     private ChatResponse callModel(Model model, ChatRequest chatRequest, Long userId, Long apiKeyId, long startTime) {
-        ModelProvider provider = getProvider(model);
+        ProviderContext providerContext = resolveProvider(model, userId);
+        checkUserQuotaAndBalance(userId, providerContext.byok());
         try {
-            org.springframework.ai.chat.model.ChatResponse aiResponse = modelInvokeService.invoke(model, provider, chatRequest);
+            org.springframework.ai.chat.model.ChatResponse aiResponse = modelInvokeService.invoke(model, providerContext.provider(), chatRequest);
             ChatResponse response = convertResponse(aiResponse, model.getModelKey());
 
             long duration = System.currentTimeMillis() - startTime;
@@ -176,8 +163,8 @@ public class ChatServiceImpl implements ChatService {
             requestLogService.logRequest(userId, apiKeyId, model.getId(), model.getModelKey(),
                     usage.getPromptTokens(), usage.getCompletionTokens(), totalTokens,
                     (int) duration, "success", null);
-            // 扣减用户配额与余额
-            if (userId != null && totalTokens > 0) {
+            // BYOK 调用由用户直接向提供者付费，不消耗平台配额或余额。
+            if (userId != null && !providerContext.byok() && totalTokens > 0) {
                 quotaService.deductTokens(userId, totalTokens);
                 deductBalance(userId, apiKeyId, model, usage.getPromptTokens(), usage.getCompletionTokens(), false);
             }
@@ -194,17 +181,19 @@ public class ChatServiceImpl implements ChatService {
      * 流式调用单个模型，返回统一的结构化响应流，并在结束/出错时记录日志
      */
     private Flux<StreamResponse> streamWithModel(Model model, ChatRequest chatRequest, Long userId, Long apiKeyId, long startTime) {
-        ModelProvider provider = getProvider(model);
+        return Flux.defer(() -> {
+            ProviderContext providerContext = resolveProvider(model, userId);
+            checkUserQuotaAndBalance(userId, providerContext.byok());
 
-        // 本次流的唯一标识与创建时间（所有 chunk 共用）
-        final String traceId = IdUtil.simpleUUID();
-        final long created = System.currentTimeMillis() / 1000;
-        // 首个块标识，用于在 delta 中携带 role
-        final boolean[] isFirstChunk = {true};
-        // Token 计数器（流式通常只有最后一个 chunk 携带 usage）
-        final int[] promptTokens = {0};
-        final int[] completionTokens = {0};
-        return modelInvokeService.invokeStreamChunk(model, provider, chatRequest)
+            // 本次流的唯一标识与创建时间（所有 chunk 共用）
+            final String traceId = IdUtil.simpleUUID();
+            final long created = System.currentTimeMillis() / 1000;
+            // 首个块标识，用于在 delta 中携带 role
+            final boolean[] isFirstChunk = {true};
+            // Token 计数器（流式通常只有最后一个 chunk 携带 usage）
+            final int[] promptTokens = {0};
+            final int[] completionTokens = {0};
+            return modelInvokeService.invokeStreamChunk(model, providerContext.provider(), chatRequest)
                 .flatMap(chunk -> {
                     if (chunk.getPromptTokens() != null && chunk.getPromptTokens() > 0) {
                         promptTokens[0] = chunk.getPromptTokens();
@@ -266,8 +255,8 @@ public class ChatServiceImpl implements ChatService {
                     requestLogService.logRequest(userId, apiKeyId, model.getId(), model.getModelKey(),
                             promptTokens[0], completionTokens[0], totalTokens,
                             (int) duration, "success", null);
-                    // 扣减用户配额和余额
-                    if (userId != null && totalTokens > 0) {
+                    // BYOK 调用不消耗平台配额或余额。
+                    if (userId != null && !providerContext.byok() && totalTokens > 0) {
                         quotaService.deductTokens(userId, totalTokens);
                         // 响应已通过 SSE 返回且连接已提交，此处扣费失败不能再向客户端抛错，
                         // 否则会触发 HttpMessageNotWritableException（无法将 Result 写入 text/event-stream）。
@@ -285,6 +274,7 @@ public class ChatServiceImpl implements ChatService {
                     requestLogService.logRequest(userId, apiKeyId, model.getId(), model.getModelKey(), 0, 0, 0,
                             (int) duration, "failed", error.getMessage());
                 });
+        });
     }
 
     /**
@@ -310,14 +300,58 @@ public class ChatServiceImpl implements ChatService {
     }
 
     /**
-     * 根据模型获取其所属提供者
+     * 获取提供者配置，并在用户配置有效密钥时以其密钥发起调用。
      */
-    private ModelProvider getProvider(Model model) {
+    private ProviderContext resolveProvider(Model model, Long userId) {
         ModelProvider provider = modelProviderService.getById(model.getProviderId());
         if (provider == null) {
             throw new BusinessException(HttpsCodeEnum.SYSTEM_ERROR, "模型 " + model.getModelKey() + " 对应的提供者不存在");
         }
-        return provider;
+
+        if (userId == null) {
+            return new ProviderContext(provider, false);
+        }
+
+        String userApiKey = userProviderKeyService.getUserProviderApiKey(userId, model.getProviderId());
+        if (StrUtil.isBlank(userApiKey)) {
+            return new ProviderContext(provider, false);
+        }
+
+        ModelProvider byokProvider = ModelProvider.builder()
+                .id(provider.getId())
+                .providerName(provider.getProviderName())
+                .displayName(provider.getDisplayName())
+                .baseUrl(provider.getBaseUrl())
+                .apiKey(userApiKey)
+                .status(provider.getStatus())
+                .healthStatus(provider.getHealthStatus())
+                .avgLatency(provider.getAvgLatency())
+                .successRate(provider.getSuccessRate())
+                .priority(provider.getPriority())
+                .config(provider.getConfig())
+                .createTime(provider.getCreateTime())
+                .updateTime(provider.getUpdateTime())
+                .build();
+        log.info("用户 {} 使用 BYOK 模式调用模型 {}", userId, model.getModelKey());
+        return new ProviderContext(byokProvider, true);
+    }
+
+    /**
+     * 平台密钥调用需校验并消耗平台权益；BYOK 调用直接使用用户自己的提供商密钥。
+     */
+    private void checkUserQuotaAndBalance(Long userId, boolean byok) {
+        if (userId == null || byok) {
+            return;
+        }
+        if (!quotaService.checkQuota(userId)) {
+            throw new BusinessException(HttpsCodeEnum.OPERATION_ERROR, "Token配额已用尽，请联系管理员增加配额");
+        }
+        if (balanceService.getUserBalance(userId).compareTo(BigDecimal.ZERO) <= 0) {
+            throw new BusinessException(HttpsCodeEnum.UNAUTHORIZED, "余额不足，请先充值");
+        }
+    }
+
+    private record ProviderContext(ModelProvider provider, boolean byok) {
     }
 
     /**
