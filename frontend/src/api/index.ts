@@ -14,6 +14,7 @@ import * as balanceController from './balanceController'
 import * as rechargeController from './rechargeController'
 import * as stripeWebhookController from './stripeWebhookController'
 import * as imageController from './imageController'
+import * as userProviderKeyController from './userProviderKeyController'
 export default {
   userController,
   chatController,
@@ -27,4 +28,5 @@ export default {
   rechargeController,
   stripeWebhookController,
   imageController,
+  userProviderKeyController,
 }

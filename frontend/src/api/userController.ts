@@ -14,6 +14,21 @@ export async function addUser(body: API.UserAddRequest, options?: { [key: string
   })
 }
 
+/** 获取用户使用分析数据（仅管理员） GET /api/user/analysis */
+export async function getUserAnalysis(
+  // 叠加生成的Param类型 (非body参数swagger默认没有生成对象)
+  params: API.getUserAnalysisParams,
+  options?: { [key: string]: any }
+) {
+  return request<API.ResultUserAnalysisVO>('/api/user/analysis', {
+    method: 'GET',
+    params: {
+      ...params,
+    },
+    ...(options || {}),
+  })
+}
+
 /** 删除用户（仅管理员） POST /api/user/delete */
 export async function deleteUser(body: API.DeleteRequest, options?: { [key: string]: any }) {
   return request<API.ResultBoolean>('/api/user/delete', {
@@ -22,6 +37,36 @@ export async function deleteUser(body: API.DeleteRequest, options?: { [key: stri
       'Content-Type': 'application/json',
     },
     data: body,
+    ...(options || {}),
+  })
+}
+
+/** 禁用用户（仅管理员） POST /api/user/disable */
+export async function disableUser(
+  // 叠加生成的Param类型 (非body参数swagger默认没有生成对象)
+  params: API.disableUserParams,
+  options?: { [key: string]: any }
+) {
+  return request<API.ResultBoolean>('/api/user/disable', {
+    method: 'POST',
+    params: {
+      ...params,
+    },
+    ...(options || {}),
+  })
+}
+
+/** 启用用户（仅管理员） POST /api/user/enable */
+export async function enableUser(
+  // 叠加生成的Param类型 (非body参数swagger默认没有生成对象)
+  params: API.enableUserParams,
+  options?: { [key: string]: any }
+) {
+  return request<API.ResultBoolean>('/api/user/enable', {
+    method: 'POST',
+    params: {
+      ...params,
+    },
     ...(options || {}),
   })
 }
@@ -65,6 +110,33 @@ export async function userLogin(body: API.UserLoginRequest, options?: { [key: st
 export async function userLogout(options?: { [key: string]: any }) {
   return request<API.ResultBoolean>('/api/user/logout', {
     method: 'POST',
+    ...(options || {}),
+  })
+}
+
+/** 重置用户已使用配额 POST /api/user/quota/reset */
+export async function resetUserQuota(
+  // 叠加生成的Param类型 (非body参数swagger默认没有生成对象)
+  params: API.resetUserQuotaParams,
+  options?: { [key: string]: any }
+) {
+  return request<API.ResultBoolean>('/api/user/quota/reset', {
+    method: 'POST',
+    params: {
+      ...params,
+    },
+    ...(options || {}),
+  })
+}
+
+/** 设置用户配额 POST /api/user/quota/set */
+export async function setUserQuota(body: API.QuotaUpdateRequest, options?: { [key: string]: any }) {
+  return request<API.ResultBoolean>('/api/user/quota/set', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    data: body,
     ...(options || {}),
   })
 }

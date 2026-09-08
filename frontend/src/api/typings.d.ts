@@ -73,10 +73,6 @@ declare namespace API {
   type ChatRequest = {
     /** 最大生成Token数 */
     max_tokens?: number
-    /** 是否启用深度思考 */
-    enable_reasoning?: boolean
-    /** 路由策略类型（auto/cost_first/latency_first/round_robin/fixed），为空时由服务端按是否指定模型自动决定 */
-    routing_strategy?: string
     /** 模型名称（如：qwen-plus） */
     model?: string
     /** 消息列表 */
@@ -85,6 +81,10 @@ declare namespace API {
     stream?: boolean
     /** 温度参数（0-1） */
     temperature?: number
+    /** 是否启用深度思考 */
+    enableReasoning?: boolean
+    /** 路由策略类型（auto/cost_first/latency_first/round_robin/fixed），为空时由服务端按是否指定模型自动决定 */
+    routingStrategy?: string
   }
 
   type checkBlacklistParams = {
@@ -118,6 +118,16 @@ declare namespace API {
   }
 
   type disableUserParams = {
+    /** 用户ID */
+    userId: number
+  }
+
+  type disableUserParams = {
+    /** 用户ID */
+    userId: number
+  }
+
+  type enableUserParams = {
     /** 用户ID */
     userId: number
   }
@@ -161,6 +171,11 @@ declare namespace API {
   type getMyTokenStatsParams = {
     /** API Key ID（可选） */
     apiKeyId?: number
+  }
+
+  type getUserAnalysisParams = {
+    /** 用户ID */
+    userId: number
   }
 
   type getUserAnalysisParams = {
@@ -215,18 +230,18 @@ declare namespace API {
   }
 
   type ImageGenerationRequest = {
-    /** 生成图片数量（默认1） */
-    n?: number
-    /** 响应格式（url/b64_json） */
-    response_format?: string
     /** 提示词 */
     prompt?: string
     /** 模型名称（默认 qwen-image-plus） */
     model?: string
+    /** 生成图片数量（默认1） */
+    n?: number
     /** 图片尺寸（如 1024x1024） */
     size?: string
     /** 图片质量（standard/hd） */
     quality?: string
+    /** 响应格式（url/b64_json） */
+    responseFormat?: string
     /** 用户标识 */
     user?: string
   }
@@ -633,6 +648,11 @@ declare namespace API {
     userId: number
   }
 
+  type resetUserQuotaParams = {
+    /** 用户ID */
+    userId: number
+  }
+
   type ResultApiKeyVO = {
     code?: number
     msg?: string
@@ -667,6 +687,12 @@ declare namespace API {
     code?: number
     msg?: string
     data?: ProviderVO[]
+  }
+
+  type ResultListUserProviderKeyVO = {
+    code?: number
+    msg?: string
+    data?: UserProviderKeyVO[]
   }
 
   type ResultLoginUserVO = {
@@ -824,6 +850,39 @@ declare namespace API {
     userAccount?: string
     /** 密码 */
     userPassword?: string
+  }
+
+  type UserProviderKeyAddRequest = {
+    /** 提供者 ID */
+    providerId?: number
+    /** API Key */
+    apiKey?: string
+  }
+
+  type UserProviderKeyUpdateRequest = {
+    /** 密钥 ID */
+    id?: number
+    /** 新的 API Key（可选） */
+    apiKey?: string
+    /** 状态（可选） */
+    status?: string
+  }
+
+  type UserProviderKeyVO = {
+    /** id */
+    id?: number
+    /** 提供者 ID */
+    providerId?: number
+    /** 提供者名称 */
+    providerName?: string
+    /** API Key（脱敏显示：只显示前8位和后4位） */
+    apiKey?: string
+    /** 状态：active/inactive */
+    status?: string
+    /** 创建时间 */
+    createTime?: string
+    /** 更新时间 */
+    updateTime?: string
   }
 
   type UserQueryRequest = {

@@ -5,6 +5,7 @@ import CallHistory from '@/views/user/CallHistory.vue'
 import RechargeSuccess from '@/views/user/RechargeSuccess.vue'
 import RechargeCancel from '@/views/user/RechargeCancel.vue'
 import ImageGeneration from '@/views/user/ImageGeneration.vue'
+import MyKeysPage from '@/views/user/MyKeysPage.vue'
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
@@ -57,6 +58,11 @@ const router = createRouter({
       path: '/user/imageGeneration',
       name: 'AI绘图',
       component: ImageGeneration,
+    },
+    {
+      path: '/user/mykeys',
+      name: '我的密钥',
+      component: MyKeysPage,
     },
     {
       path: '/admin',

@@ -52,7 +52,7 @@ import { useRouter } from 'vue-router'
 import { type MenuProps, message } from 'ant-design-vue'
 import { useLoginUserStore } from '@/stores/loginUser.ts'
 import { userLogout } from '@/api/userController.ts'
-import { LogoutOutlined, HomeOutlined, HistoryOutlined, PictureOutlined, CommentOutlined, KeyOutlined, AppstoreOutlined } from '@ant-design/icons-vue'
+import { LogoutOutlined, HomeOutlined, HistoryOutlined, PictureOutlined, CommentOutlined, KeyOutlined, AppstoreOutlined, SafetyOutlined } from '@ant-design/icons-vue'
 
 const loginUserStore = useLoginUserStore()
 const router = useRouter()
@@ -94,6 +94,12 @@ const originItems = [
         icon: () => h(PictureOutlined),
         label: 'AI绘图',
         title: 'AI绘图',
+    },
+    {
+        key: '/user/mykeys',
+        icon: () => h(SafetyOutlined),
+        label: '我的密钥',
+        title: '我的密钥（BYOK）',
     },
     {
         key: '/admin/model',
