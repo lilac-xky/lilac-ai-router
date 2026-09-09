@@ -46,6 +46,21 @@ public class RequestLog implements Serializable {
     private String modelName;
 
     /**
+     * 请求模型标识（调用历史按此字段模糊查询）
+     */
+    private String requestModel;
+
+    /**
+     * 请求类型：chat/image
+     */
+    private String requestType;
+
+    /**
+     * 调用来源：api/web
+     */
+    private String source;
+
+    /**
      * 输入Token数
      */
     private Integer promptTokens;

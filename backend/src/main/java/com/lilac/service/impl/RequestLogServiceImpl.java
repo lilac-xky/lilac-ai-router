@@ -75,6 +75,8 @@ public class RequestLogServiceImpl implements RequestLogService {
                 .userId(userId)
                 .apiKeyId(apiKeyId)
                 .modelName(modelName)
+                .requestModel(modelName)
+                .requestType("chat")
                 .promptTokens(promptTokens)
                 .completionTokens(completionTokens)
                 .totalTokens(totalTokens)

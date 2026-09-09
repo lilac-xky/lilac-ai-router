@@ -11,6 +11,14 @@ spring:
         options:
           model: qwen-plus
           temperature: 0.7
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: true        # 没历史表时自动打基线（防止以后 CI/新机器首启动崩溃）
+    baseline-version: 1000           # 和V1000 对齐
+    validate-on-migrate: true        # 严格校验（防止 V1 改了之后又跑老环境）
+    out-of-order: false              # 不允许乱序（生产习惯；以后要撤销迁移再开）
+
 server:
   port: 9090
   servlet:
