@@ -10,6 +10,7 @@ import com.lilac.domain.entity.ModelProvider;
 import com.lilac.enums.HttpsCodeEnum;
 import com.lilac.enums.RoutingStrategyTypeEnum;
 import com.lilac.exception.BusinessException;
+import com.lilac.metrics.AIMetricsCollector;
 import com.lilac.model.StreamResponse;
 import com.lilac.service.*;
 import jakarta.annotation.Resource;
@@ -56,6 +57,8 @@ public class ChatServiceImpl implements ChatService {
     private BalanceService balanceService;
     @Resource
     private UserProviderKeyService userProviderKeyService;
+    @Resource
+    private AIMetricsCollector aiMetricsCollector;
 
     /**
      * 非流式聊天
@@ -160,9 +163,17 @@ public class ChatServiceImpl implements ChatService {
             long duration = System.currentTimeMillis() - startTime;
             ChatResponse.Usage usage = response.getUsage();
             int totalTokens = usage.getTotalTokens();
+
+            // 记录请求日志
             requestLogService.logRequest(userId, apiKeyId, model.getId(), model.getModelKey(),
                     usage.getPromptTokens(), usage.getCompletionTokens(), totalTokens,
                     (int) duration, "success", null);
+
+            // 收集监控指标
+            aiMetricsCollector.recordRequest(model.getModelKey(), userId, apiKeyId != null ? apiKeyId.toString() : null);
+            aiMetricsCollector.recordTokens(model.getModelKey(), totalTokens);
+            aiMetricsCollector.recordResponseTime(model.getModelKey(), duration);
+
             // BYOK 调用由用户直接向提供者付费，不消耗平台配额或余额。
             if (userId != null && !providerContext.byok() && totalTokens > 0) {
                 quotaService.deductTokens(userId, totalTokens);
@@ -173,6 +184,9 @@ public class ChatServiceImpl implements ChatService {
             long duration = System.currentTimeMillis() - startTime;
             requestLogService.logRequest(userId, apiKeyId, model.getId(), model.getModelKey(), 0, 0, 0,
                     (int) duration, "failed", e.getMessage());
+
+            // 收集错误指标
+            aiMetricsCollector.recordError(model.getModelKey(), "MODEL_ERROR");
             throw e;
         }
     }
@@ -252,9 +266,16 @@ public class ChatServiceImpl implements ChatService {
                 .doOnComplete(() -> {
                     long duration = System.currentTimeMillis() - startTime;
                     int totalTokens = promptTokens[0] + completionTokens[0];
+
                     requestLogService.logRequest(userId, apiKeyId, model.getId(), model.getModelKey(),
                             promptTokens[0], completionTokens[0], totalTokens,
                             (int) duration, "success", null);
+
+                    // 收集监控指标
+                    aiMetricsCollector.recordRequest(model.getModelKey(), userId, apiKeyId != null ? apiKeyId.toString() : null);
+                    aiMetricsCollector.recordTokens(model.getModelKey(), totalTokens);
+                    aiMetricsCollector.recordResponseTime(model.getModelKey(), duration);
+
                     // BYOK 调用不消耗平台配额或余额。
                     if (userId != null && !providerContext.byok() && totalTokens > 0) {
                         quotaService.deductTokens(userId, totalTokens);
@@ -273,6 +294,9 @@ public class ChatServiceImpl implements ChatService {
                     long duration = System.currentTimeMillis() - startTime;
                     requestLogService.logRequest(userId, apiKeyId, model.getId(), model.getModelKey(), 0, 0, 0,
                             (int) duration, "failed", error.getMessage());
+
+                    // 收集流式错误指标
+                    aiMetricsCollector.recordError(model.getModelKey(), "STREAM_ERROR");
                 });
         });
     }

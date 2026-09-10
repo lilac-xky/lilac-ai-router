@@ -32,6 +32,10 @@ build/
 ### VS Code ###
 .vscode/
 
+### Logs ###
+logs/
+*.log
+
 backend/src/main/resources/application-dev.yml
 
 docs/ONBOARDING.md
