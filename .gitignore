@@ -1,5 +1,6 @@
 HELP.md
 target/
+**/target/
 .mvn/wrapper/maven-wrapper.jar
 !**/src/main/**/target/
 !**/src/test/**/target/
@@ -14,10 +15,12 @@ target/
 .sts4-cache
 
 ### IntelliJ IDEA ###
-.idea
+.idea/
+**/.idea/
 *.iws
 *.iml
 *.ipr
+out/
 
 ### NetBeans ###
 /nbproject/private/
@@ -34,8 +37,45 @@ build/
 
 ### Logs ###
 logs/
+**/logs/
 *.log
 
-backend/src/main/resources/application-dev.yml
+### Env & 密钥（防误提交）###
+.env
+.env.*
+!.env.example
+**/*.pem
+**/*.key
+**/*.p12
+**/*.pfx
+**/*.jks
+**/*.keystore
+secrets/
+**/secrets/
+**/*.local
 
+### 本地 Spring 配置（含明文密钥，只留本机）###
+backend/src/main/resources/application-dev.yml
+backend/src/main/resources/application-dev.yml.bak
+**/application-dev.yml
+**/application-local.yml
+**/application-*local*.yml
+
+### Docker 本地覆写（不进版本库）###
+docker-compose.override.yml
+docker-compose.local.yml
+docker-compose.*.local.yml
+
+### 备份/临时文件 ###
+*.bak
+*.orig
+*.tmp
+*.swp
+
+### OS ###
+.DS_Store
+Thumbs.db
+desktop.ini
+
+### 原有条目：项目速查手册（含本机路径，保持忽略）###
 docs/ONBOARDING.md

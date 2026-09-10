@@ -1,0 +1,45 @@
+# ---------- 敏感 / 本地配置 ----------
+**/application-dev.yml
+**/application-local.yml
+**/application-*.local.yml
+.env
+.env.*
+!.env.example
+**/*.pem
+**/*.key
+**/*.p12
+**/*.jks
+**/secrets/
+**/*.local
+
+# ---------- 版本控制 / IDE ----------
+.git
+.gitignore
+.idea
+**/.idea
+*.iml
+*.iws
+*.ipr
+.vscode
+
+# ---------- 构建产物 ----------
+**/target/
+**/build/
+**/dist/
+**/dist-ssr/
+**/node_modules/
+**/*.log
+logs/
+**/logs/
+
+# ---------- 与后端镜像无关的内容 ----------
+frontend/
+docs/
+*.md
+
+# ---------- 本机杂项 ----------
+.DS_Store
+Thumbs.db
+**/*.bak
+**/*.orig
+**/.mvn/wrapper/maven-wrapper.jar

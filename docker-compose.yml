@@ -1,0 +1,116 @@
+# =============================================================================
+# lilac-ai-router 本地/单机部署：backend + MySQL 8 + Redis 7
+#
+# 使用：
+#   cp .env.example .env        # 填真实值（.env 已被 .gitignore 忽略）
+#   docker compose up -d --build
+#   docker compose ps           # STATE 列应为 healthy / running (healthy)
+#   docker compose logs -f backend
+#
+# 启动顺序（ depends_on + condition: service_healthy ）：
+#   mysql(healthy) + redis(healthy) → backend
+#   不等 MySQL 就绪后端会连不上 DB 直接退出，靠 restart 硬重启属于掩耳盗铃，
+#   所以这里用真实健康检查而不是简单的 depends_on 列表。
+#
+# 说明：backend 的健康检查定义在 Dockerfile 的 HEALTHCHECK 里（docker run 也生效），
+#       这里不重复声明，避免两处漂移。
+# =============================================================================
+
+services:
+  # ------------------------------------------------------------------ MySQL
+  mysql:
+    image: mysql:8.0
+    container_name: lilac-router-mysql
+    restart: unless-stopped
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --default-time-zone=+08:00
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      TZ: Asia/Shanghai
+    ports:
+      - "${MYSQL_HOST_PORT}:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      # $$ 转义：交给容器内的 shell 展开，而不是 compose 主机侧
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
+    networks:
+      - router-net
+
+  # ------------------------------------------------------------------ Redis
+  redis:
+    image: redis:7
+    container_name: lilac-router-redis
+    restart: unless-stopped
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD}", "--appendonly", "yes"]
+    environment:
+      # redis-cli 从此变量读取密码，避免 healthcheck 命令行里出现明文
+      REDISCLI_AUTH: ${REDIS_PASSWORD}
+      TZ: Asia/Shanghai
+    ports:
+      - "${REDIS_HOST_PORT}:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks:
+      - router-net
+
+  # ---------------------------------------------------------------- Backend
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: lilac-ai-router:latest
+    container_name: lilac-router-backend
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      # 容器内走服务名，不写 localhost
+      SPRING_DATASOURCE_URL: "jdbc:mysql://mysql:3306/${MYSQL_DATABASE}?useUnicode=true&characterEncoding=utf-8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false"
+      SPRING_DATASOURCE_USERNAME: ${MYSQL_USER}
+      SPRING_DATASOURCE_PASSWORD: ${MYSQL_PASSWORD}
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: 6379
+      SPRING_DATA_REDIS_PASSWORD: ${REDIS_PASSWORD}
+      # 大模型与支付密钥：全部来自 .env，仓库里没有明文
+      SPRING_AI_OPENAI_API_KEY: ${SPRING_AI_OPENAI_API_KEY}
+      STRIPE_API_KEY: ${STRIPE_API_KEY}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET}
+      STRIPE_SUCCESS_URL: ${STRIPE_SUCCESS_URL}
+      STRIPE_CANCEL_URL: ${STRIPE_CANCEL_URL}
+      TZ: Asia/Shanghai
+      JAVA_OPTS: "-XX:MaxRAMPercentage=75.0"
+    ports:
+      - "${SERVER_PORT}:9090"
+    volumes:
+      - backend-logs:/app/logs
+    networks:
+      - router-net
+
+volumes:
+  mysql-data:
+  redis-data:
+  backend-logs:
+
+networks:
+  router-net:
+    driver: bridge

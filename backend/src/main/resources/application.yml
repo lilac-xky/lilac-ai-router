@@ -2,7 +2,10 @@ spring:
   application:
     name: lilac-ai-router
   profiles:
-    active: dev
+    # 默认 dev；容器里用 SPRING_PROFILES_ACTIVE=prod 覆盖激活 application-prod.yml。
+    # 写成占位符而不是硬编码 dev，是为了让环境变量能明确压过配置文件（否则 profile
+    # 到底取哪个会随属性源顺序变，是排查时很坑的一类问题）。
+    active: ${SPRING_PROFILES_ACTIVE:dev}
   ai:
     openai:
       # 通义千问兼容 OpenAI 接口

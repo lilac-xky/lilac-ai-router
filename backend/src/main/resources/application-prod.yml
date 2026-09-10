@@ -1,0 +1,67 @@
+# =============================================================================
+# 生产 / 容器配置（会被提交进 git）
+#
+# 原则：本文件不含任何明文密钥，全部通过 ${ENV_VAR} 从环境变量注入。
+#       Spring Boot 的 relaxed binding 会把 SPRING_DATASOURCE_PASSWORD 这类
+#       变量自动映射到同名配置项，所以 docker-compose / k8s 里只给环境变量即可。
+# =============================================================================
+
+spring:
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: ${SPRING_DATASOURCE_URL}
+    username: ${SPRING_DATASOURCE_USERNAME}
+    password: ${SPRING_DATASOURCE_PASSWORD}
+    hikari:
+      maximum-pool-size: ${DB_POOL_MAX_SIZE:20}
+      minimum-idle: ${DB_POOL_MIN_IDLE:5}
+      connection-timeout: 30000
+      validation-timeout: 5000
+      idle-timeout: 600000
+      max-lifetime: 1800000
+
+  # Session 配置
+  session:
+    redis:
+      namespace: ${SPRING_SESSION_REDIS_NAMESPACE:lilac:session}
+
+  # Redis 配置
+  data:
+    redis:
+      host: ${SPRING_DATA_REDIS_HOST:redis}
+      port: ${SPRING_DATA_REDIS_PORT:6379}
+      password: ${SPRING_DATA_REDIS_PASSWORD:}
+      database: ${SPRING_DATA_REDIS_DATABASE:0}
+      timeout: 5s
+      connect-timeout: 5s
+
+  ai:
+    openai:
+      # 通义千问兼容 OpenAI 接口（base-url / model 沿用 application.yml，需要换供应商时用环境变量覆盖）
+      base-url: ${SPRING_AI_OPENAI_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode}
+      api-key: ${SPRING_AI_OPENAI_API_KEY}
+      chat:
+        options:
+          model: ${SPRING_AI_OPENAI_MODEL:qwen-plus}
+
+# MyBatis Flex 配置
+# 注意：本项目数据库列名是"驼峰原样"，不是下划线，所以必须关掉下划线→驼峰映射，
+#       否则所有字段都会查不出来（prod 与 dev 必须保持一致，改这里等于改 SQL 行为）
+mybatis-flex:
+  configuration:
+    map-underscore-to-camel-case: false
+
+stripe:
+  api-key: ${STRIPE_API_KEY}
+  webhook-secret: ${STRIPE_WEBHOOK_SECRET}
+  success-url: ${STRIPE_SUCCESS_URL:http://localhost:5173/recharge/success}
+  cancel-url: ${STRIPE_CANCEL_URL:http://localhost:5173/recharge/cancel}
+
+# 生产日志级别：框架降噪，业务包保持 INFO
+logging:
+  level:
+    root: INFO
+    com.lilac: INFO
+    org.springframework.web: WARN
+    org.redisson: WARN
+    io.lettuce: WARN

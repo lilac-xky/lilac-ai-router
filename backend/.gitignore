@@ -14,7 +14,8 @@ target/
 .sts4-cache
 
 ### IntelliJ IDEA ###
-.idea
+.idea/
+**/.idea/
 *.iws
 *.iml
 *.ipr
@@ -32,4 +33,34 @@ build/
 ### VS Code ###
 .vscode/
 
-backend/src/main/resources/application-dev.yml
+### Logs ###
+logs/
+**/logs/
+*.log
+
+### Env & 密钥（防误提交）###
+.env
+.env.*
+!.env.example
+**/*.pem
+**/*.key
+**/*.p12
+**/*.jks
+**/secrets/
+
+### 本地 Spring 配置（含明文密钥，只留本机）###
+src/main/resources/application-dev.yml
+src/main/resources/application-dev.yml.bak
+**/application-dev.yml
+**/application-local.yml
+**/application-*local*.yml
+
+### 备份/临时文件 ###
+*.bak
+*.orig
+*.tmp
+
+### OS ###
+.DS_Store
+Thumbs.db
+desktop.ini
