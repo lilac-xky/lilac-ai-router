@@ -10,6 +10,31 @@ jobs:
   build:
     runs-on: ubuntu-latest
 
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: lilac-ai-router
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -proot --silent"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+          --health-start-period=30s
+
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+
     steps:
       - name: 拉取代码
         uses: actions/checkout@v5
@@ -24,8 +49,18 @@ jobs:
       - name: 安装 SDK 到本地仓库
         run: mvn -B -f lilac-ai-router-sdk/pom.xml install -DskipTests
 
-      - name: 打包backend
-        run: mvn -B -f backend/pom.xml package -DskipTests
+      - name: 测试并打包backend
+        env:
+          SPRING_PROFILES_ACTIVE: prod
+          SPRING_DATASOURCE_URL: "jdbc:mysql://127.0.0.1:3306/lilac-ai-router?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai&characterEncoding=utf-8"
+          SPRING_DATASOURCE_USERNAME: root
+          SPRING_DATASOURCE_PASSWORD: root
+          SPRING_DATA_REDIS_HOST: 127.0.0.1
+          SPRING_DATA_REDIS_PORT: 6379
+          SPRING_AI_OPENAI_API_KEY: dummy-key-for-ci
+          STRIPE_API_KEY: sk_test_dummy
+          STRIPE_WEBHOOK_SECRET: whsec_dummy
+        run: mvn -B -f backend/pom.xml verify
 
       - name: 构建 Docker 镜像
         run: docker build -t lilac-ai-router:ci .
