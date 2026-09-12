@@ -60,7 +60,7 @@ jobs:
           SPRING_AI_OPENAI_API_KEY: dummy-key-for-ci
           STRIPE_API_KEY: sk_test_dummy
           STRIPE_WEBHOOK_SECRET: whsec_dummy
-        run: mvn -B -f backend/pom.xml verify
+        run: mvn -B -f backend/pom.xml verify -Dw6pending=false
 
       - name: 构建 Docker 镜像
         run: docker build -t lilac-ai-router:ci .
