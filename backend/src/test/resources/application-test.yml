@@ -1,0 +1,28 @@
+# =============================================================================
+# 集成测试专用覆盖（@ActiveProfiles({"dev", "test"})）
+#
+#    本文件会被提交进 git，因此【不允许出现任何密钥】。
+#    连接串与密码一律来自：
+#      环境变量（CI）  >  本文件  >  application-dev.yml（本机，已 gitignore）
+#
+# 所以本文件只放两类东西：必须非空的占位值、只对测试生效的调参。
+# =============================================================================
+spring:
+  ai:
+    openai:
+      # 唯一「必须非空」的配置：Spring AI 的 OpenAIAutoConfigurationUtil 里是
+      # Assert.hasText(apiKey, "API key must be set...")，且 OpenAiChatAutoConfiguration
+      # 默认生效（matchIfMissing=true）—— 给空值会让整个上下文起不来。
+      # 测试不会真调模型，占位值即可（本机这一行会盖掉 dev 里的真实 key）。
+      api-key: "${SPRING_AI_OPENAI_API_KEY:dummy-key-for-test}"
+  datasource:
+    hikari:
+      # Hikari 默认 maximum-pool-size = 10，小于 20 个并发线程。
+      # 池子不够会让线程排队、交错概率下降 → 并发用例"时红时绿"。
+      maximum-pool-size: 32
+
+logging:
+  level:
+    com.lilac: INFO
+    org.redisson: WARN
+    io.lettuce: WARN
