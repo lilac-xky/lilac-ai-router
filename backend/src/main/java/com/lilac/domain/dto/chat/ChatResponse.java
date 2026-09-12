@@ -29,6 +29,7 @@ public class ChatResponse implements Serializable {
     /**
      * 对象类型
      */
+    @Builder.Default
     private String object = "chat.completion";
 
     /**
