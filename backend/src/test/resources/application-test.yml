@@ -26,3 +26,28 @@ logging:
     com.lilac: INFO
     org.redisson: WARN
     io.lettuce: WARN
+
+# =============================================================================
+# 关掉健康检查定时任务 —— 这是测试能否"稳定绿"的前提，不是优化项。
+#
+# HealthCheckTask 挂着 @Scheduled(fixedRate = 30000)，在测试里照常触发，而它会：
+#   1) 调 syncModelMetricsFromRequestLog() → modelService.getActiveModels()，
+#      生成的 SQL 是：SELECT ... FROM `model` WHERE (status = ?) AND `isDelete` = ?
+#      —— 参数只有 active / 0，【没有任何 modelType 过滤】，于是测试刚插进去的种子行
+#      会被一起捞出来，然后在 UPDATE 里把 healthStatus / avgLatency / score 全部改写：
+#          healthStatus: 按 ModelStats 默认 successRate=100 判定 → 恒为 'healthy'
+#          avgLatency:   无请求日志 → 0
+#          score:        归一化参数全 0 → 0.0000
+#      结果：本该被 healthStatus 过滤掉的负对照行（unhealthy）变成 healthy，
+#      于是漏进 fallback 列表 → 用例时红时绿。
+#   2) 对每个 provider 发真实请求，测试期间持续烧 token 费用。
+#
+# 实测：RoutingStrategyTest 整类只跑约 1.0s，而 tick 每 30s 一次（多上下文叠加后更密），
+#       撞进这 1s 窗口就会红 —— 正是"偶发红"的来源。
+#
+# 生产/开发行为不变：HealthCheckTask 上的 @ConditionalOnProperty 是 matchIfMissing = true，
+# 只有显式写 false 才关。顺带这也给"每 30s 烧钱"的任务留了个真正的开关。
+# =============================================================================
+lilac:
+  health-check:
+    enabled: false
