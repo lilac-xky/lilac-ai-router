@@ -13,7 +13,7 @@ import org.springframework.stereotype.Service;
 @Service
 @Slf4j
 public class QuotaServiceImpl implements QuotaService {
-    
+
     @Resource
     private UserMapper userMapper;
     
@@ -61,25 +61,8 @@ public class QuotaServiceImpl implements QuotaService {
             return true;
         }
         try {
-            // 先查询当前用户的已使用Token数
-            User user = userMapper.selectOneById(userId);
-            if (user == null) {
-                return false;
-            }
-            Long currentUsedTokens = user.getUsedTokens();
-            if (currentUsedTokens == null) {
-                currentUsedTokens = 0L;
-            }
-            // 更新已使用Token数
-            User updateUser = new User();
-            updateUser.setId(userId);
-            updateUser.setUsedTokens(currentUsedTokens + tokens);
-            int updated = userMapper.update(updateUser);
-
-            if (updated > 0) {
-                log.debug("用户 {} 扣减Token {} 成功", userId, tokens);
-            }
-            return updated > 0;
+            // 使用原子更新方法扣减Token
+            return userMapper.deductTokensAtomically(userId, tokens) > 0;
         } catch (Exception e) {
             log.error("用户 {} 扣减Token失败", userId, e);
             return false;
