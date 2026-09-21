@@ -70,6 +70,53 @@ public class QuotaServiceImpl implements QuotaService {
     }
 
     /**
+     * 预留额度：按预估值原子占用配额。与 {@link #deductTokens} 同一条 SQL，差别只在语义
+     */
+    @Override
+    public boolean reserveTokens(Long userId, int estimatedTokens) {
+        return deductTokens(userId, estimatedTokens);
+    }
+
+    /**
+     * 结算：实际低于预留则退回，高于则补扣。
+     */
+    @Override
+    public void settleTokens(Long userId, int reservedTokens, int actualTokens) {
+        if (userId == null) {
+            return;
+        }
+        int diff = actualTokens - reservedTokens;
+        if (diff == 0) {
+            return;
+        }
+        if (diff < 0) {
+            refundTokens(userId, -diff);
+            return;
+        }
+        if (!deductTokens(userId, diff)) {
+            log.warn("用户 {} 结算补扣失败，产生欠费：预留 {} Token，实际 {} Token，缺口 {} Token", userId, reservedTokens, actualTokens, diff);
+        }
+    }
+
+    /**
+     * 退回预留的 Token 配额。失败只告警，不把「调用失败」升级成「接口 500」
+     */
+    @Override
+    public void refundTokens(Long userId, int tokens) {
+        if (userId == null || tokens <= 0) {
+            return;
+        }
+        try {
+            int affected = userMapper.refundTokensAtomically(userId, tokens);
+            if (affected == 0) {
+                log.warn("用户 {} 退回 {} Token 失败：用户不存在或已删除", userId, tokens);
+            }
+        } catch (Exception e) {
+            log.error("用户 {} 退回 {} Token 异常，需人工核对配额账目", userId, tokens, e);
+        }
+    }
+
+    /**
      * 获取用户剩余配额
      *
      * @param userId 用户ID

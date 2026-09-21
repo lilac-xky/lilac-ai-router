@@ -38,8 +38,13 @@ public class BalanceServiceImpl extends ServiceImpl<UserMapper, User> implements
      */
     @Override
     public boolean checkBalance(Long userId, BigDecimal amount) {
-        if (userId == null || amount == null || amount.compareTo(BigDecimal.ZERO) <= 0) {
-            return false;
+        // 匿名 / BYOK 不消耗平台余额
+        if (userId == null) {
+            return true;
+        }
+        // 无需付费（免费模型）→ 通过。返回 false 会让调用方的 !checkBalance(...) 抛出「余额不足 ¥0」
+        if (amount == null || amount.compareTo(BigDecimal.ZERO) <= 0) {
+            return true;
         }
         User user = getById(userId);
         if (user == null) {
@@ -88,7 +93,7 @@ public class BalanceServiceImpl extends ServiceImpl<UserMapper, User> implements
     }
 
     /**
-     * 充值用户余额
+     * 充值用户余额（账单类型 {@code recharge}）
      *
      * @param userId      用户ID
      * @param amount      金额
@@ -98,6 +103,24 @@ public class BalanceServiceImpl extends ServiceImpl<UserMapper, User> implements
     @Override
     @Transactional(rollbackFor = Exception.class)
     public boolean addBalance(Long userId, BigDecimal amount, String description) {
+        return increaseBalance(userId, amount, description, "recharge");
+    }
+
+    /**
+     * 退还余额（账单类型 {@code refund}）—— 与充值只差账单类型，
+     * 对账时要能区分「用户充的钱」和「没提供服务而还回去的钱」
+     */
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public boolean refundBalance(Long userId, BigDecimal amount, String description) {
+        return increaseBalance(userId, amount, description, "refund");
+    }
+
+    /**
+     * 余额增加的公共实现：原子累加 + 记一条账单。
+     * 私有方法，跑在调用方的事务里，因此「加钱 + 记账」同生共死。
+     */
+    private boolean increaseBalance(Long userId, BigDecimal amount, String description, String billingType) {
         if (userId == null || amount == null || amount.compareTo(BigDecimal.ZERO) <= 0) {
             return false;
         }
@@ -115,12 +138,17 @@ public class BalanceServiceImpl extends ServiceImpl<UserMapper, User> implements
                 .amount(amount)
                 .balanceBefore(currentBalance)
                 .balanceAfter(newBalance)
-                .description(description != null ? description : "账户充值")
-                .billingType("recharge")
+                .description(description != null ? description
+                        : ("refund".equals(billingType) ? "余额退还" : "账户充值"))
+                .billingType(billingType)
                 .createTime(LocalDateTime.now())
                 .build();
         billingRecordService.save(billingRecord);
-        log.info("用户 {} 充值成功：¥{} -> ¥{}", userId, currentBalance, newBalance);
+        if ("refund".equals(billingType)) {
+            log.info("用户 {} 退还余额成功：¥{} -> ¥{}", userId, currentBalance, newBalance);
+        } else {
+            log.info("用户 {} 充值成功：¥{} -> ¥{}", userId, currentBalance, newBalance);
+        }
         return true;
     }
 
@@ -140,19 +168,5 @@ public class BalanceServiceImpl extends ServiceImpl<UserMapper, User> implements
             throw new BusinessException(HttpsCodeEnum.NOT_FOUND_ERROR, "用户不存在");
         }
         return user.getBalance() != null ? user.getBalance() : BigDecimal.ZERO;
-    }
-
-    /**
-     * 更新用户余额
-     *
-     * @param user 用户
-     * @return 是否成功
-     */
-    @Override
-    public boolean updateBalance(User user) {
-        if (user == null || user.getId() == null) {
-            throw new BusinessException(HttpsCodeEnum.PARAMS_ERROR);
-        }
-        return this.updateById(user);
     }
 }

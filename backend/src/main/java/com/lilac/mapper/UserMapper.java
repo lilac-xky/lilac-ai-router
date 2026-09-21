@@ -28,6 +28,17 @@ public interface UserMapper extends BaseMapper<User> {
     int deductTokensAtomically(@Param("userId") Long userId, @Param("tokens") int tokens);
 
     /**
+     * 原子退款用户 token使用量
+     *
+     * @param userId 用户ID
+     * @param tokens 令牌数
+     * @return 影响行数
+     */
+    @Update("UPDATE `user` SET usedTokens = GREATEST(COALESCE(usedTokens, 0) - #{tokens}, 0) "
+            + "WHERE id = #{userId} AND isDelete = 0")
+    int refundTokensAtomically(@Param("userId") Long userId, @Param("tokens") int tokens);
+
+    /**
      * 原子扣减余额，余额不足时不更新任何行
      *
      * @param userId 用户ID
