@@ -1,8 +1,6 @@
 package com.lilac.service.impl;
 
 import com.lilac.domain.entity.RechargeRecord;
-import com.lilac.enums.HttpsCodeEnum;
-import com.lilac.exception.BusinessException;
 import com.lilac.mapper.RechargeRecordMapper;
 import com.lilac.service.BalanceService;
 import com.lilac.service.RechargeService;
@@ -28,6 +26,9 @@ public class RechargeServiceImpl extends ServiceImpl<RechargeRecordMapper, Recha
     @Resource
     private BalanceService balanceService;
 
+    @Resource
+    private RechargeRecordMapper rechargeRecordMapper;
+
     /**
      * 创建充值记录
      *
@@ -52,7 +53,7 @@ public class RechargeServiceImpl extends ServiceImpl<RechargeRecordMapper, Recha
     }
 
     /**
-     * 完成充值
+     * 完成充值，同一记录重复或并发回调只会入账一次
      *
      * @param recordId 充值记录ID
      * @param paymentId 支付ID
@@ -60,19 +61,13 @@ public class RechargeServiceImpl extends ServiceImpl<RechargeRecordMapper, Recha
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void completeRecharge(Long recordId, String paymentId) {
-        RechargeRecord record = getById(recordId);
-        if (record == null) {
-            throw new BusinessException(HttpsCodeEnum.NOT_FOUND_ERROR, "充值记录不存在");
-        }
-        if ("success".equals(record.getStatus())) {
-            log.warn("充值记录 {} 已经完成，跳过重复处理", recordId);
+        // 条件更新抢占：1 = 本次抢到，0 = 已被处理过
+        if (rechargeRecordMapper.markSuccessIfPending(recordId, paymentId) == 0) {
+            log.warn("充值记录 {} 已处理过，跳过重复回调", recordId);
             return;
         }
-        // 更新充值记录状态
-        record.setStatus("success");
-        record.setPaymentId(paymentId);
-        record.setUpdateTime(LocalDateTime.now());
-        updateById(record);
+        // 抢占成功说明记录存在
+        RechargeRecord record = getById(recordId);
         // 增加用户余额
         String description = String.format("Stripe充值 ¥%s", record.getAmount());
         balanceService.addBalance(record.getUserId(), record.getAmount(), description);

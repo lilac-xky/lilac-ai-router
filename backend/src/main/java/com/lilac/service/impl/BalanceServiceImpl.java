@@ -26,6 +26,9 @@ public class BalanceServiceImpl extends ServiceImpl<UserMapper, User> implements
     @Resource
     private BillingRecordService billingRecordService;
 
+    @Resource
+    private UserMapper userMapper;
+
     /**
      * 检查用户余额是否充足
      *
@@ -61,23 +64,13 @@ public class BalanceServiceImpl extends ServiceImpl<UserMapper, User> implements
         if (userId == null || amount == null || amount.compareTo(BigDecimal.ZERO) <= 0) {
             return false;
         }
-        // 获取用户当前余额
-        User user = getById(userId);
-        if (user == null) {
-            throw new BusinessException(HttpsCodeEnum.NOT_FOUND_ERROR, "用户不存在");
+        // 判断与累加在同一条 SQL，影响行数为 0 即余额不足
+        if (userMapper.deductBalanceAtomically(userId, amount) == 0) {
+            throw new BusinessException(HttpsCodeEnum.UNAUTHORIZED, "余额不足，本次需要：¥" + amount);
         }
-        BigDecimal currentBalance = user.getBalance() != null ? user.getBalance() : BigDecimal.ZERO;
-        // 检查余额是否充足
-        if (currentBalance.compareTo(amount) < 0) {
-            throw new BusinessException(HttpsCodeEnum.UNAUTHORIZED, "余额不足，当前余额：¥" + currentBalance + "，需要：¥" + amount);
-        }
-        // 扣减余额
-        BigDecimal newBalance = currentBalance.subtract(amount);
-        user.setBalance(newBalance);
-        boolean updated = updateById(user);
-        if (!updated) {
-            throw new BusinessException(HttpsCodeEnum.OPERATION_ERROR, "扣减余额失败");
-        }
+        // after 取真实写回值，before 由 after 反推，保证账单前后自洽
+        BigDecimal newBalance = getUserBalance(userId);
+        BigDecimal currentBalance = newBalance.add(amount);
         // 记录账单
         BillingRecord billingRecord = BillingRecord.builder()
                 .userId(userId)
@@ -108,17 +101,13 @@ public class BalanceServiceImpl extends ServiceImpl<UserMapper, User> implements
         if (userId == null || amount == null || amount.compareTo(BigDecimal.ZERO) <= 0) {
             return false;
         }
-        User user = getById(userId);
-        if (user == null) {
+        // 原子累加，影响行数为 0 即用户不存在
+        if (userMapper.addBalanceAtomically(userId, amount) == 0) {
             throw new BusinessException(HttpsCodeEnum.NOT_FOUND_ERROR, "用户不存在");
         }
-        BigDecimal currentBalance = user.getBalance() != null ? user.getBalance() : BigDecimal.ZERO;
-        BigDecimal newBalance = currentBalance.add(amount);
-        user.setBalance(newBalance);
-        boolean updated = updateById(user);
-        if (!updated) {
-            throw new BusinessException(HttpsCodeEnum.OPERATION_ERROR, "充值失败");
-        }
+        // after 取真实写回值，before 由 after 反推，保证账单前后自洽
+        BigDecimal newBalance = getUserBalance(userId);
+        BigDecimal currentBalance = newBalance.subtract(amount);
         // 记录账单
         BillingRecord billingRecord = BillingRecord.builder()
                 .userId(userId)
