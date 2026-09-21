@@ -256,6 +256,8 @@ public class ChatServiceImpl implements ChatService {
             // Token 计数器（流式通常只有最后一个 chunk 携带 usage）
             final int[] promptTokens = {0};
             final int[] completionTokens = {0};
+            // 已交付字符数：取消/中断时拿不到 usage，用它反推实际产出
+            final int[] producedChars = {0};
             return modelInvokeService.invokeStreamChunk(model, providerContext.provider(), chatRequest)
                 .flatMap(chunk -> {
                     if (chunk.getPromptTokens() != null && chunk.getPromptTokens() > 0) {
@@ -278,10 +280,12 @@ public class ChatServiceImpl implements ChatService {
                     }
                     // 处理普通文本内容
                     if (chunk.hasText()) {
+                        producedChars[0] += chunk.getText().length();
                         deltaBuilder.content(chunk.getText());
                     }
                     // 处理深度思考内容（deepseek-reasoner 专属）
                     if (chunk.hasReasoningContent()) {
+                        producedChars[0] += chunk.getReasoningContent().length();
                         deltaBuilder.reasoningContent(chunk.getReasoningContent());
                     }
                     StreamResponse.StreamChoice choice = StreamResponse.StreamChoice.builder()
@@ -339,15 +343,17 @@ public class ChatServiceImpl implements ChatService {
                     // 收集流式错误指标
                     aiMetricsCollector.recordError(model.getModelKey(), "STREAM_ERROR");
 
-                    // 流失败 → 预留全额退回
+                    // 已产出的部分照收（上游已计费），一个字都没出才全退
                     if (reservationClosed.compareAndSet(false, true)) {
-                        refundReservation(reservation, "流式调用失败");
+                        settleDeliveredPart(reservation, model, chatRequest, promptTokens, completionTokens,
+                                producedChars[0], "流式调用中断");
                     }
                 })
-                // 客户端主动断开：上游可能已产出部分内容，但服务没交付完，选择退回预留
+                // 客户端主动断开：上游已产出并计费的部分照收，差额退回
                 .doOnCancel(() -> {
                     if (reservationClosed.compareAndSet(false, true)) {
-                        refundReservation(reservation, "客户端取消流式请求");
+                        settleDeliveredPart(reservation, model, chatRequest, promptTokens, completionTokens,
+                                producedChars[0], "客户端取消流式请求");
                     }
                 });
         });
@@ -439,6 +445,25 @@ public class ChatServiceImpl implements ChatService {
             log.error("预留退款失败（{}），用户 {} 的额度/余额可能被多占，需人工核对：{} Token / ¥{}",
                     reason, reservation.userId(), reservation.tokens(), reservation.cost(), e);
         }
+    }
+
+    /**
+     * 结算流式调用的「已交付部分」。usage 到了就用真实值；没到（客户端取消、中途断开）就按请求估算 prompt、
+     * 按已产出字符估算 completion —— 上游已经为这些内容花过钱，不能因为客户端跑了就全额退回。
+     * 一个字符都没产出才等价于失败，退回全部预留。
+     */
+    private void settleDeliveredPart(CallReservation reservation, Model model, ChatRequest chatRequest,
+                                     int[] promptTokens, int[] completionTokens, int producedChars, String reason) {
+        if (!reservation.isActive()) {
+            return;
+        }
+        if (producedChars <= 0 && completionTokens[0] <= 0) {
+            refundReservation(reservation, reason);
+            return;
+        }
+        int prompt = promptTokens[0] > 0 ? promptTokens[0] : estimatePromptTokens(chatRequest);
+        int completion = completionTokens[0] > 0 ? completionTokens[0] : Math.max(1, producedChars / CHARS_PER_TOKEN);
+        settleSafely(reservation, model, prompt, completion, prompt + completion);
     }
 
     /**
