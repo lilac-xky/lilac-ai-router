@@ -7,6 +7,7 @@ import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
+import java.math.BigDecimal;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 
@@ -27,6 +28,8 @@ public class AIMetricsCollector {
     private final ConcurrentHashMap<String, Counter> modelRequestCounters = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Counter> modelTokenCounters = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Counter> userRequestCounters = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, Counter> quotaRejectedCounters = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, Counter> settlementDeficitCounters = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Timer> modelTimers = new ConcurrentHashMap<>();
 
     public AIMetricsCollector(MeterRegistry meterRegistry) {
@@ -142,6 +145,42 @@ public class AIMetricsCollector {
                 Counter.builder("ai.requests.by_user")
                         .description("按用户统计的请求数")
                         .tag("user_id", k)
+                        .register(meterRegistry)
+        );
+    }
+
+    /**
+     * 记录「配额预留被拒」的次数（额度不够，请求未打到上游）。
+     * 只按模型打标签：user_id 是无界高基数维度，进 tag 会让时间序列爆炸，定位用户看日志
+     */
+    public void recordQuotaRejected(String modelKey, Long userId) {
+        getOrCreateQuotaRejectedCounter(modelKey).increment();
+        log.warn("配额预留被拒：模型 {}, 用户 {}", modelKey, userId);
+    }
+
+    /**
+     * 记录「结算差额追缴失败」的次数 —— 欠费规模的直接度量。
+     * 与「配额被拒」区分：前者是拦住了，这里是没拦住、钱漏了
+     */
+    public void recordSettlementDeficit(String modelKey, Long userId, BigDecimal deficit) {
+        getOrCreateSettlementDeficitCounter(modelKey).increment();
+        log.warn("结算差额追缴失败（欠费）：模型 {}, 用户 {}, 缺口 ¥{}", modelKey, userId, deficit);
+    }
+
+    private Counter getOrCreateQuotaRejectedCounter(String modelKey) {
+        return quotaRejectedCounters.computeIfAbsent(modelKey != null ? modelKey : "unknown", k ->
+                Counter.builder("ai.quota.rejected")
+                        .description("配额预留被拒的次数")
+                        .tag("model", k)
+                        .register(meterRegistry)
+        );
+    }
+
+    private Counter getOrCreateSettlementDeficitCounter(String modelKey) {
+        return settlementDeficitCounters.computeIfAbsent(modelKey != null ? modelKey : "unknown", k ->
+                Counter.builder("ai.settlement.deficit")
+                        .description("结算差额追缴失败的次数")
+                        .tag("model", k)
                         .register(meterRegistry)
         );
     }

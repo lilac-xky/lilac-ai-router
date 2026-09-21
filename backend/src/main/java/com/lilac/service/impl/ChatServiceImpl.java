@@ -2,6 +2,7 @@ package com.lilac.service.impl;
 
 import cn.hutool.core.util.IdUtil;
 import cn.hutool.core.util.StrUtil;
+import com.lilac.domain.dto.billing.CallReservation;
 import com.lilac.domain.dto.chat.ChatMessage;
 import com.lilac.domain.dto.chat.ChatRequest;
 import com.lilac.domain.dto.chat.ChatResponse;
@@ -10,6 +11,7 @@ import com.lilac.domain.entity.ModelProvider;
 import com.lilac.enums.HttpsCodeEnum;
 import com.lilac.enums.RoutingStrategyTypeEnum;
 import com.lilac.exception.BusinessException;
+import com.lilac.exception.CallRejectedException;
 import com.lilac.metrics.AIMetricsCollector;
 import com.lilac.model.StreamResponse;
 import com.lilac.service.*;
@@ -20,6 +22,7 @@ import reactor.core.publisher.Flux;
 
 import java.math.BigDecimal;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * 聊天服务实现类
@@ -39,6 +42,21 @@ public class ChatServiceImpl implements ChatService {
      */
     private static final int MAX_FALLBACK_RETRIES = 2;
 
+    /**
+     * 请求未指定 max_tokens 时为输出预留的 Token 数。太小兜不住实际输出，太大容易误拒
+     */
+    private static final int DEFAULT_RESERVED_COMPLETION_TOKENS = 1024;
+
+    /**
+     * 预估输入 Token 的字符折算比。中文约 1 token/字、英文约 1 token/4 字符，取 2 折中
+     */
+    private static final int CHARS_PER_TOKEN = 2;
+
+    /**
+     * 每条消息的固定开销（角色标记、分隔符），按字符折算
+     */
+    private static final int MESSAGE_OVERHEAD_CHARS = 16;
+
     @Resource
     private RoutingService routingService;
     @Resource
@@ -55,6 +73,8 @@ public class ChatServiceImpl implements ChatService {
     private BillingService billingService;
     @Resource
     private BalanceService balanceService;
+    @Resource
+    private CallSettlementService callSettlementService;
     @Resource
     private UserProviderKeyService userProviderKeyService;
     @Resource
@@ -118,6 +138,10 @@ public class ChatServiceImpl implements ChatService {
         if (fallbackModels != null && !fallbackModels.isEmpty()) {
             Model fallbackModel = fallbackModels.get(0);
             stream = stream.onErrorResume(e -> {
+                if (e instanceof CallRejectedException) {
+                    // 账户资源不足，换备选模型同样会被拒，不降级
+                    return Flux.error(e);
+                }
                 log.warn("模型 {} 流式调用失败，回退到备选模型 {}", selectedModel.getModelKey(), fallbackModel.getModelKey(), e);
                 return streamWithModel(fallbackModel, chatRequest, userId, apiKeyId, startTime);
             });
@@ -132,6 +156,9 @@ public class ChatServiceImpl implements ChatService {
                                             ChatRequest chatRequest, Long userId, Long apiKeyId, long startTime) {
         try {
             return callModel(primaryModel, chatRequest, userId, apiKeyId, startTime);
+        } catch (CallRejectedException e) {
+            // 账户资源不足，不降级
+            throw e;
         } catch (Exception e) {
             log.warn("模型 {} 调用失败，尝试 Fallback", primaryModel.getModelKey(), e);
             if (fallbackModels != null && !fallbackModels.isEmpty()) {
@@ -141,6 +168,9 @@ public class ChatServiceImpl implements ChatService {
                     try {
                         log.info("尝试 Fallback 模型: {}", fallbackModel.getModelKey());
                         return callModel(fallbackModel, chatRequest, userId, apiKeyId, startTime);
+                    } catch (CallRejectedException rejected) {
+                        // 备选模型同样被闸门拒绝，再试没意义
+                        throw rejected;
                     } catch (Exception fallbackException) {
                         log.warn("Fallback 模型 {} 调用失败", fallbackModel.getModelKey(), fallbackException);
                     }
@@ -151,13 +181,21 @@ public class ChatServiceImpl implements ChatService {
     }
 
     /**
-     * 调用单个模型（非流式），并记录请求日志
+     * 调用单个模型（非流式），并记录请求日志。
      */
     private ChatResponse callModel(Model model, ChatRequest chatRequest, Long userId, Long apiKeyId, long startTime) {
         ProviderContext providerContext = resolveProvider(model, userId);
-        checkUserQuotaAndBalance(userId, providerContext.byok());
+        CallReservation reservation = buildReservation(model, chatRequest, userId, apiKeyId, providerContext.byok());
+
+        // 校验用户配额与余额
+        checkUserQuotaAndBalance(userId, providerContext.byok(), reservation);
+        callSettlementService.reserve(reservation);
+
+        boolean modelInvoked = false;
         try {
             org.springframework.ai.chat.model.ChatResponse aiResponse = modelInvokeService.invoke(model, providerContext.provider(), chatRequest);
+            // 上游已计费，之后任何失败都不能再退预留
+            modelInvoked = true;
             ChatResponse response = convertResponse(aiResponse, model.getModelKey());
 
             long duration = System.currentTimeMillis() - startTime;
@@ -174,13 +212,18 @@ public class ChatServiceImpl implements ChatService {
             aiMetricsCollector.recordTokens(model.getModelKey(), totalTokens);
             aiMetricsCollector.recordResponseTime(model.getModelKey(), duration);
 
-            // BYOK 调用由用户直接向提供者付费，不消耗平台配额或余额。
-            if (userId != null && !providerContext.byok() && totalTokens > 0) {
-                quotaService.deductTokens(userId, totalTokens);
-                deductBalance(userId, apiKeyId, model, usage.getPromptTokens(), usage.getCompletionTokens(), false);
-            }
+            // 结算：对齐真实用量。失败只记欠费，不把已交付的服务改成失败
+            settleSafely(reservation, model, usage.getPromptTokens(), usage.getCompletionTokens(), totalTokens);
             return response;
         } catch (Exception e) {
+            if (!modelInvoked) {
+                // 上游一次都没调到，预留全额退回
+                refundReservation(reservation, "模型调用失败");
+            } else {
+                log.error("模型已调用但后续处理失败，预留 {} Token / ¥{} 不再退回（上游成本已发生），用户 {}",
+                        reservation.tokens(), reservation.cost(), userId, e);
+            }
+
             long duration = System.currentTimeMillis() - startTime;
             requestLogService.logRequest(userId, apiKeyId, model.getId(), model.getModelKey(), 0, 0, 0,
                     (int) duration, "failed", e.getMessage());
@@ -197,7 +240,13 @@ public class ChatServiceImpl implements ChatService {
     private Flux<StreamResponse> streamWithModel(Model model, ChatRequest chatRequest, Long userId, Long apiKeyId, long startTime) {
         return Flux.defer(() -> {
             ProviderContext providerContext = resolveProvider(model, userId);
-            checkUserQuotaAndBalance(userId, providerContext.byok());
+            CallReservation reservation = buildReservation(model, chatRequest, userId, apiKeyId, providerContext.byok());
+
+            // 前置校验（友好提示，不是闸门）；占不到配额/余额会抛 CallRejectedException
+            checkUserQuotaAndBalance(userId, providerContext.byok(), reservation);
+            callSettlementService.reserve(reservation);
+            // doOnComplete / doOnError / doOnCancel 都可能触发，用 CAS 保证只结一次或只退一次
+            final AtomicBoolean reservationClosed = new AtomicBoolean(false);
 
             // 本次流的唯一标识与创建时间（所有 chunk 共用）
             final String traceId = IdUtil.simpleUUID();
@@ -276,17 +325,9 @@ public class ChatServiceImpl implements ChatService {
                     aiMetricsCollector.recordTokens(model.getModelKey(), totalTokens);
                     aiMetricsCollector.recordResponseTime(model.getModelKey(), duration);
 
-                    // BYOK 调用不消耗平台配额或余额。
-                    if (userId != null && !providerContext.byok() && totalTokens > 0) {
-                        quotaService.deductTokens(userId, totalTokens);
-                        // 响应已通过 SSE 返回且连接已提交，此处扣费失败不能再向客户端抛错，
-                        // 否则会触发 HttpMessageNotWritableException（无法将 Result 写入 text/event-stream）。
-                        // 余额已在流开始前做过前置校验，正常情况下不会失败；并发耗尽时仅记录欠费日志。
-                        try {
-                            deductBalance(userId, apiKeyId, model, promptTokens[0], completionTokens[0], true);
-                        } catch (Exception e) {
-                            log.error("流式调用扣减余额失败，用户 {} 可能产生欠费", userId, e);
-                        }
+                    // 结算。响应已通过 SSE 返回，不能再抛错（会触发 HttpMessageNotWritableException）
+                    if (reservationClosed.compareAndSet(false, true)) {
+                        settleSafely(reservation, model, promptTokens[0], completionTokens[0], totalTokens);
                     }
                 })
                 .doOnError(error -> {
@@ -297,30 +338,107 @@ public class ChatServiceImpl implements ChatService {
 
                     // 收集流式错误指标
                     aiMetricsCollector.recordError(model.getModelKey(), "STREAM_ERROR");
+
+                    // 流失败 → 预留全额退回
+                    if (reservationClosed.compareAndSet(false, true)) {
+                        refundReservation(reservation, "流式调用失败");
+                    }
+                })
+                // 客户端主动断开：上游可能已产出部分内容，但服务没交付完，选择退回预留
+                .doOnCancel(() -> {
+                    if (reservationClosed.compareAndSet(false, true)) {
+                        refundReservation(reservation, "客户端取消流式请求");
+                    }
                 });
         });
     }
 
     /**
-     * 计算本次调用费用并扣减用户余额（费用为 0 时不扣减，也不记录账单）
-     *
-     * @param userId           用户ID
-     * @param apiKeyId         API密钥ID（用于区分 API/网页来源）
-     * @param model            实际调用的模型
-     * @param promptTokens     提示词Token数
-     * @param completionTokens 完成词Token数
-     * @param stream           是否为流式调用（仅影响账单描述）
+     * 构造预留凭据（预估 Token 与预估费用）。匿名与 BYOK 调用返回空凭据。预估输出优先取请求里的 {@code max_tokens}，没给则用默认预留量。
      */
-    private void deductBalance(Long userId, Long apiKeyId, Model model, int promptTokens, int completionTokens, boolean stream) {
-        BigDecimal cost = billingService.calculateCost(model, promptTokens, completionTokens);
-        if (cost.compareTo(BigDecimal.ZERO) <= 0) {
+    private CallReservation buildReservation(Model model, ChatRequest chatRequest, Long userId, Long apiKeyId, boolean byok) {
+        if (userId == null || byok) {
+            return CallReservation.none();
+        }
+        int estimatedPromptTokens = estimatePromptTokens(chatRequest);
+        int estimatedCompletionTokens = resolveEstimatedCompletionTokens(chatRequest);
+        int estimatedTokens = estimatedPromptTokens + estimatedCompletionTokens;
+        BigDecimal estimatedCost = billingService.calculateCost(model, estimatedPromptTokens, estimatedCompletionTokens);
+        // 区分 API 调用与网页调用，方便对账按来源汇总
+        String channel = apiKeyId != null ? "API调用消费" : "网页调用消费";
+        return new CallReservation(userId, model.getModelKey(), estimatedTokens, estimatedCost, channel);
+    }
+
+    /**
+     * 预估输入 Token 数：字符数 / {@link #CHARS_PER_TOKEN} 粗算。不引 tokenizer，估算只要「宁可略高」，多退少补会兜回来。
+     */
+    private int estimatePromptTokens(ChatRequest chatRequest) {
+        List<ChatMessage> messages = chatRequest.getMessages();
+        if (messages == null || messages.isEmpty()) {
+            return 0;
+        }
+        int chars = 0;
+        for (ChatMessage message : messages) {
+            if (message == null) {
+                continue;
+            }
+            if (message.getRole() != null) {
+                chars += message.getRole().length();
+            }
+            if (message.getContent() != null) {
+                chars += message.getContent().length();
+            }
+            chars += MESSAGE_OVERHEAD_CHARS;
+        }
+        return Math.max(1, chars / CHARS_PER_TOKEN);
+    }
+
+    /**
+     * 预估输出 Token 数：优先用请求里的 {@code max_tokens}，没给则用默认预留量。
+     */
+    private int resolveEstimatedCompletionTokens(ChatRequest chatRequest) {
+        Integer maxTokens = chatRequest.getMaxTokens();
+        if (maxTokens != null && maxTokens > 0) {
+            return maxTokens;
+        }
+        return DEFAULT_RESERVED_COMPLETION_TOKENS;
+    }
+
+    /**
+     * 结算（成功路径）。吞异常是刻意的：服务已经交付，把请求改成失败挽回不了上游成本，
+     * 只会让用户「花了钱还收到报错」。留下欠费日志与指标即可。
+     */
+    private void settleSafely(CallReservation reservation, Model model, int promptTokens, int completionTokens, int totalTokens) {
+        if (!reservation.isActive()) {
             return;
         }
-        // 根据来源区分账单描述
-        String channel = apiKeyId != null ? "API调用消费" : "网页调用消费";
-        String suffix = stream ? "（流式）" : "";
-        String description = channel + suffix + " - " + model.getModelKey();
-        balanceService.deductBalance(userId, cost, null, description);
+        BigDecimal actualCost = billingService.calculateCost(model, promptTokens, completionTokens);
+        try {
+            callSettlementService.settle(reservation, totalTokens, actualCost);
+        } catch (Exception e) {
+            // 结算失败，记录欠费
+            BigDecimal deficit = actualCost.subtract(reservation.cost() != null ? reservation.cost() : BigDecimal.ZERO);
+            if (deficit.compareTo(BigDecimal.ZERO) > 0) {
+                aiMetricsCollector.recordSettlementDeficit(model.getModelKey(), reservation.userId(), deficit);
+            }
+            log.error("结算失败，用户 {} 本次调用产生欠费：预留 {} Token / ¥{}，实际 {} Token / ¥{}",
+                    reservation.userId(), reservation.tokens(), reservation.cost(), totalTokens, actualCost, e);
+        }
+    }
+
+    /**
+     * 退回预留（失败路径）。退款失败只升级日志，不再把「调用失败」变成「退款也炸了」
+     */
+    private void refundReservation(CallReservation reservation, String reason) {
+        if (!reservation.isActive()) {
+            return;
+        }
+        try {
+            callSettlementService.refund(reservation);
+        } catch (Exception e) {
+            log.error("预留退款失败（{}），用户 {} 的额度/余额可能被多占，需人工核对：{} Token / ¥{}",
+                    reason, reservation.userId(), reservation.tokens(), reservation.cost(), e);
+        }
     }
 
     /**
@@ -361,17 +479,19 @@ public class ChatServiceImpl implements ChatService {
     }
 
     /**
-     * 平台密钥调用需校验并消耗平台权益；BYOK 调用直接使用用户自己的提供商密钥。
+     * 校验用户配额与余额
      */
-    private void checkUserQuotaAndBalance(Long userId, boolean byok) {
+    private void checkUserQuotaAndBalance(Long userId, boolean byok, CallReservation reservation) {
         if (userId == null || byok) {
             return;
         }
         if (!quotaService.checkQuota(userId)) {
-            throw new BusinessException(HttpsCodeEnum.OPERATION_ERROR, "Token配额已用尽，请联系管理员增加配额");
+            throw new CallRejectedException(HttpsCodeEnum.OPERATION_ERROR, "Token配额已用尽，请联系管理员增加配额");
         }
-        if (balanceService.getUserBalance(userId).compareTo(BigDecimal.ZERO) <= 0) {
-            throw new BusinessException(HttpsCodeEnum.UNAUTHORIZED, "余额不足，请先充值");
+        // 只在本次确实要花钱时才校验余额，免费模型不该被余额为 0 的账号拦掉
+        BigDecimal needCost = reservation.cost();
+        if (needCost != null && needCost.compareTo(BigDecimal.ZERO) > 0 && balanceService.getUserBalance(userId).compareTo(needCost) < 0) {
+            throw new CallRejectedException(HttpsCodeEnum.UNAUTHORIZED, "余额不足：本次调用预计需要 ¥" + needCost + "，请先充值");
         }
     }
 
