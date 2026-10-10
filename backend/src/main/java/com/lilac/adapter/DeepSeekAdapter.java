@@ -37,7 +37,7 @@ public class DeepSeekAdapter implements ModelAdapter {
     /**
      * 支持的提供者名称
      */
-    private static final Set<String> SUPPORTED_PROVIDERS = Set.of("deepseek-v4-flash", "deepseek-v4-pro");
+    private static final Set<String> SUPPORTED_PROVIDERS = Set.of("deepseek", "DeepSeek", "DEEPSEEK", "ds");
 
     /**
      * 调用模型
