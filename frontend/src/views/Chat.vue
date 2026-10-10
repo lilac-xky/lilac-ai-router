@@ -373,13 +373,13 @@ async function sendCompletion() {
         const chatRequest: API.ChatRequest = {
             messages: messages.value.map((m) => ({ role: m.role, content: m.content })),
             stream: true,
-            routing_strategy: routingStrategy.value,
+            routingStrategy: routingStrategy.value,
         }
         // 固定模型策略：携带模型标识与深度思考配置
         if (routingStrategy.value === 'fixed' && selectedModel.value) {
             chatRequest.model = selectedModel.value.modelKey
             if (selectedModel.value.supportReasoning === 1) {
-                chatRequest.enable_reasoning = enableReasoning.value
+                chatRequest.enableReasoning = enableReasoning.value
             }
         }
 
