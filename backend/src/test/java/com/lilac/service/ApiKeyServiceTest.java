@@ -12,6 +12,9 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import javax.sql.DataSource;
 import java.sql.Connection;
@@ -25,7 +28,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * API Key 服务测试：创建 / 列表 / 撤销 / 按 Key 值查找 / 用量累加。
@@ -53,9 +55,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *       ⇒ 真撞了的话「用哪个 Key 认证」取决于读取顺序，且没有异常可查。
  *       见 {@link #duplicateKeyValue_isAllowedAndResolvedSilently_documentsWart()}。</li>
  *   <li><b>{@code totalTokens} 是 {@code int NULL DEFAULT NULL}</b> —— 可为空。
- *       而 {@code updateUsageStats} 里是 {@code apiKey.getTotalTokens() + tokens}（自动拆箱）
- *       ⇒ 遇到 {@code NULL} 直接 NPE。见
- *       {@link #updateUsageStats_throwsNpeWhenTotalTokensNull_documentsWart()}。
+ *       ⚠️ 这一条曾经是真缺陷：{@code apiKey.getTotalTokens() + tokens} 会自动拆箱，
+ *       遇到 {@code NULL} 直接 NPE，一次对话请求就 500。
+ *       <b>已修</b>（{@code updateUsageStats} 改成定向原子 UPDATE，NULL 由 SQL 的
+ *       {@code COALESCE} 兜住），回归见 {@link #updateUsageStats_accumulatesFromNullTokens()}。
  *       另外 Java 侧字段是 {@code Long}、库里是 {@code int}（32 位），
  *       超过 21 亿 token 会溢出 —— 本测试不验（造不出来），但记在这里。</li>
  *   <li><b>{@code lastUsedTime} 是 {@code NOT NULL DEFAULT CURRENT_TIMESTAMP}</b> ——
@@ -86,14 +89,26 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *
  * <h3>★ 两组用例，读的时候要分清</h3>
  * <ul>
- *   <li><b>A 组</b>（前 9 个）—— 断言的是<b>期望语义</b>，绿 = 这块是对的。</li>
+ *   <li><b>A 组</b> —— 断言的是<b>期望语义</b>，绿 = 这块是对的。</li>
  *   <li><b>B 组</b>（名字带 {@code _documentsWart}）—— 断言的是<b>当前实现的实际行为</b>，
  *       绿<b>不代表</b>这是对的，只代表「缺陷已被钉住、修改时会有感应」。
  *       每条都在方法注释里写了「该修的是什么」和「修好之后断言该怎么改」。
  *       把它们改成绿色期望值 = 修好了；改动实现时这两个方向必须一起动。</li>
  * </ul>
- * B 组的缺陷不在 W3 修（W3 的定位是「写复现问题的测试」），归属周次见
- * {@code docs/issue-ApiKey与密钥管理.md}。
+ *
+ * <h3>★ W6 已修掉的两条（原 B 组用例已转正为回归）</h3>
+ * <ol>
+ *   <li><b>撤销被静默回滚</b> —— 原先由 {@code staleSnapshotWriteBack_revertsRevoke_documentsWart} 钉住，
+ *       现已修掉（{@code updateUsageStats} 不再回写整行），用例转为
+ *       {@link #updateUsageStats_doesNotRevertRevoke()} 断言「status 保持 revoked」；</li>
+ *   <li><b>{@code totalTokens} 为 NULL 时 NPE</b> —— 原先由
+ *       {@code updateUsageStats_throwsNpeWhenTotalTokensNull_documentsWart} 钉住，
+ *       现已修掉（NULL 由 SQL 的 {@code COALESCE} 兜住），用例转为
+ *       {@link #updateUsageStats_accumulatesFromNullTokens()}。</li>
+ * </ol>
+ * 两者与 W6「扣费原子性」同一根因：<b>用「读整行再写回整行」实现计数，必然丢更新</b>。
+ * 剩余 B 组用例（{@code keyValue} 无唯一索引、明文存储、{@code lastUsedTime}、{@code keyName}
+ * 纯空格）属 DDL 与安全语义，归属 W8，见 {@code docs/issue-ApiKey与密钥管理.md}。
  */
 @Slf4j
 public class ApiKeyServiceTest extends IntegrationTestSupport {
@@ -110,6 +125,8 @@ public class ApiKeyServiceTest extends IntegrationTestSupport {
     private ApiKeyMapper apiKeyMapper;
     @Resource
     private DataSource dataSource;
+    @Resource
+    private PlatformTransactionManager transactionManager;
 
     private String runId;
     private Long testUserId;
@@ -353,32 +370,29 @@ public class ApiKeyServiceTest extends IntegrationTestSupport {
     }
 
     @Test
-    @DisplayName("已知缺陷 · totalTokens 为 NULL 时 updateUsageStats 抛 NPE")
-    void updateUsageStats_throwsNpeWhenTotalTokensNull_documentsWart() {
+    @DisplayName("用量 · totalTokens 为 NULL 时也能正常累加（回归：原先抛 NPE）")
+    void updateUsageStats_accumulatesFromNullTokens() {
         // DDL 是 `totalTokens int NULL DEFAULT NULL`，所以 NULL 是合法存量状态
         ApiKey row = insert(newSeed("n1", testUserId, "active", null).build());
 
-        log.info("[缺陷·NPE·{}] totalTokens=NULL 时调用 updateUsageStats → 抛 NPE（自动拆箱 getTotalTokens() + tokens）", runId);
-
-        // ⚠️ 断言的是【当前实现的行为】。`apiKey.getTotalTokens() + tokens` 里 getTotalTokens() 是 Long，
-        // 与 int 相加会自动拆箱 → 遇到 NULL 直接 NPE，异常冒到切面外变成 500。
-        // 后果：只要库里有任何一行 totalTokens 是 NULL（历史数据、别的写入路径、手工插入），
-        //      调用它的那次对话请求就 500 —— 而且和「这个 Key 本身」看起来毫无关系，极难定位。
-        // 该修的：`(apiKey.getTotalTokens() == null ? 0L : apiKey.getTotalTokens()) + tokens`。
-        // 注意 controller 的 getMyTokenStats 已经这么兜了，说明这个坑在别处已经踩过一次 —— service 里漏了。
-        assertThatThrownBy(() -> apiKeyService.updateUsageStats(row.getId(), 5))
-                .as("NULL 用量 + 累加 = NPE（缺陷，不是期望行为）")
-                .isInstanceOf(NullPointerException.class)
-                .hasMessageContaining("getTotalTokens");
-
-        // 对照：把它补成 0 之后就正常了 —— 这也是存量数据的临时补救办法
-        ApiKey fixed = apiKeyMapper.selectOneById(row.getId());
-        fixed.setTotalTokens(0L);
-        apiKeyMapper.update(fixed);
         apiKeyService.updateUsageStats(row.getId(), 5);
+        ApiKey after = apiKeyMapper.selectOneById(row.getId());
+
+        log.info("[用量·NULL·{}] totalTokens=NULL + 5 → {}（不再抛 NPE）", runId, after.getTotalTokens());
+
+        // ✅ 期望语义。修复前这里是 NPE：`apiKey.getTotalTokens() + tokens` 里 getTotalTokens()
+        //    是 Long，与 int 相加会自动拆箱 → 遇到 NULL 直接 NPE，异常冒到切面外变成 500。
+        //    后果是：只要库里有任何一行 totalTokens 是 NULL（历史数据、别的写入路径、手工插入），
+        //    调用它的那次对话请求就 500 —— 而且报错指向 ApiKey.getTotalTokens()，
+        //    和「这个用户当时在做什么」看起来毫无关系，极难定位。
+        //    现在 NULL 由 SQL 里的 COALESCE(totalTokens, 0) 兜住，不再进入 Java 的拆箱路径。
+        assertThat(after.getTotalTokens()).as("NULL 应被当成 0 再加 5").isEqualTo(5L);
+
+        // 再累加一次，确认不是「覆盖成 5」而是真的继续往上加
+        apiKeyService.updateUsageStats(row.getId(), 3);
         assertThat(apiKeyMapper.selectOneById(row.getId()).getTotalTokens())
-                .as("补 0 后累加正常")
-                .isEqualTo(5L);
+                .as("NULL 起步后继续累加应为 8")
+                .isEqualTo(8L);
     }
 
     @Test
@@ -411,44 +425,39 @@ public class ApiKeyServiceTest extends IntegrationTestSupport {
     }
 
     @Test
-    @DisplayName("已知缺陷 · 撤销可被「陈旧快照写回」静默回滚，已撤销的 Key 会复活")
-    void staleSnapshotWriteBack_revertsRevoke_documentsWart() {
+    @DisplayName("用量 · 记用量不会把已撤销的 Key 复活（回归：原先撤销被静默回滚）")
+    void updateUsageStats_doesNotRevertRevoke() {
         ApiKey k = apiKeyService.createApiKey(MARKER + runId + "-s1", user(testUserId));
 
-        // 把并发窗口按顺序摆出来（确定性演示，不用真并发碰运气）：
-        // ① 另一个请求先读到了这行（此时 status=active）
-        ApiKey staleSnapshot = apiKeyMapper.selectOneById(k.getId());
-        // ② 撤销在这中间提交了
-        apiKeyService.revokeApiKey(k.getId(), testUserId);
-        String statusAfterRevoke = apiKeyMapper.selectOneById(k.getId()).getStatus();
-        // ③ 那个请求现在才写回它读到的整行 —— 这一步正是 updateUsageStats 的第 3 行 `this.updateById(apiKey)`
-        apiKeyMapper.update(staleSnapshot);
+        // 用 Spring 的 TransactionTemplate 模拟事务
+        TransactionTemplate outer = new TransactionTemplate(transactionManager);
+        TransactionTemplate inner = new TransactionTemplate(transactionManager);
+        // 撤销必须走另一条连接（REQUIRES_NEW）才能提交，否则外层快照看不到「已提交」这个事实
+        inner.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+
+        outer.executeWithoutResult(tx -> {
+            // ① 另一个请求读到了这行（快照 status=active）
+            ApiKey snapshot = apiKeyMapper.selectOneById(k.getId());
+            assertThat(snapshot.getStatus()).as("前置：快照读到的还是 active").isEqualTo("active");
+
+            // ② 撤销在这中间提交了
+            inner.executeWithoutResult(innerTx -> apiKeyService.revokeApiKey(k.getId(), testUserId));
+
+            // ③ 那个请求现在才回来记用量 —— 旧实现会在这里把第 ① 步的整行写回，
+            //    status 跟着从 revoked 覆盖回 active
+            apiKeyService.updateUsageStats(k.getId(), 5);
+        });
 
         ApiKey after = apiKeyMapper.selectOneById(k.getId());
         ApiKey stillUsable = apiKeyService.getByKeyValue(k.getKeyValue());
+        log.info("[用量·撤销不回滚·{}] 记用量后 status={} | 该 Key 还能认证={} | totalTokens={}",
+                runId, after.getStatus(), stillUsable != null, after.getTotalTokens());
 
-        log.info("[缺陷·撤销被回滚·{}] revoke 后 status={} → 陈旧写回后 status={} | 该 Key 还能认证={}",
-                runId, statusAfterRevoke, after.getStatus(), stillUsable != null);
-
-        // ⚠️ 断言的是【当前实现的行为】。updateUsageStats 是「读整行 → 改 token → 写整行」，
-        // 第 3 步的 updateById 会把这行**所有非 null 字段**一起写回（实测 updateById 忽略 null，
-        // 但 status / keyValue 都是非 null 的，所以会被覆盖）。
-        // 后果：并发下「撤销」会被「记用量」无声抹掉 —— 用户点了撤销，看起来成功了（返回 true、
-        //      界面显示已撤销），后台一个并发的对话请求把 status 写回 active，这个 Key 继续能用。
-        //      **安全操作被普通计费操作回滚**，属于最不该发生的一类竞态。
-        // 该修的：updateUsageStats 改用「只更新用量这一列」的定向 SQL
-        //      （如 `UPDATE api_key SET totalTokens = totalTokens + ?, lastUsedTime = NOW() WHERE id = ?`
-        //       走原子累加，而不是读-改-写整行）—— 和 W6「扣费原子性」是同一类问题：
-        //      **用「读整行再写回整行」实现计数，必然丢更新**。
-        // 修好后本用例应改为断言 status 仍是 revoked、且 getByKeyValue 返回 null。
-        assertThat(statusAfterRevoke).as("前置：撤销本身是成功的").isEqualTo("revoked");
-        assertThat(after.getStatus())
-                .as("陈旧写回把 revoked 覆盖成了 active（缺陷，不是期望行为）")
-                .isEqualTo("active");
-        assertThat(stillUsable)
-                .as("已撤销的 Key 重新可用了 —— 这才是这条缺陷真正的后果")
-                .isNotNull();
-        assertThat(stillUsable.getStatus()).isEqualTo("active");
+        // 旧实现逻辑：撤销时 status 变成 revoked，记用量时再把 status 跟着改成 active
+        assertThat(after.getStatus()).as("记用量不得改动 status").isEqualTo("revoked");
+        assertThat(stillUsable).as("已撤销的 Key 必须保持不可用").isNull();
+        // 而它该做的事仍然做到：这笔用量要记上（第 ③ 步不能因为 Key 被撤销就不记账）
+        assertThat(after.getTotalTokens()).as("撤销后到达的用量仍应入账").isEqualTo(5L);
     }
 
     // ================================================================== helpers

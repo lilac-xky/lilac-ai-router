@@ -9,6 +9,8 @@ import com.lilac.mapper.ApiKeyMapper;
 import com.lilac.service.ApiKeyService;
 import com.mybatisflex.core.query.QueryWrapper;
 import com.mybatisflex.spring.service.impl.ServiceImpl;
+import jakarta.annotation.Resource;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
@@ -18,7 +20,11 @@ import java.util.List;
  * API Key 服务实现类
  */
 @Service
+@Slf4j
 public class ApiKeyServiceImpl extends ServiceImpl<ApiKeyMapper, ApiKey> implements ApiKeyService {
+
+    @Resource
+    private ApiKeyMapper apiKeyMapper;
 
     /**
      * 创建 API Key
@@ -109,16 +115,22 @@ public class ApiKeyServiceImpl extends ServiceImpl<ApiKeyMapper, ApiKey> impleme
      * 更新 API Key 使用统计
      *
      * @param apiKeyId API Key ID
-     * @param tokens 使用的 tokens
+     * @param tokens   使用的 Token 数
      */
     @Override
     public void updateUsageStats(Long apiKeyId, Integer tokens) {
-        ApiKey apiKey = this.getById(apiKeyId);
-        if (apiKey != null) {
-            apiKey.setTotalTokens(apiKey.getTotalTokens() + tokens);
-            apiKey.setLastUsedTime(LocalDateTime.now());
-            apiKey.setUpdateTime(LocalDateTime.now());
-            this.updateById(apiKey);
+        if (apiKeyId == null || tokens == null || tokens <= 0) {
+            return;
+        }
+        try {
+            int affected = apiKeyMapper.increaseTokensAtomically(apiKeyId, tokens);
+            if (affected == 0) {
+                // 记录 API Key 用量未生效：id={} 不存在或已删除，本次 {} Token 未入账
+                log.warn("记录 API Key 用量未生效：id={} 不存在或已删除，本次 {} Token 未入账", apiKeyId, tokens);
+            }
+        } catch (Exception e) {
+            // 记录 API Key 用量失败，需人工核对
+            log.error("记录 API Key 用量失败，需人工核对：id={} tokens={}", apiKeyId, tokens, e);
         }
     }
 }
