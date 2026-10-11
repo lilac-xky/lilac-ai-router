@@ -78,4 +78,5 @@ Thumbs.db
 desktop.ini
 
 ### 原有条目：项目速查手册（含本机路径，保持忽略）###
-docs/ONBOARDING.md
+docs/
+AGENTS.md

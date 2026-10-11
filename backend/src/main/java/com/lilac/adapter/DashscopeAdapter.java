@@ -9,6 +9,8 @@ import com.lilac.domain.entity.Model;
 import com.lilac.domain.entity.ModelProvider;
 import com.lilac.enums.HttpsCodeEnum;
 import com.lilac.exception.BusinessException;
+import io.netty.channel.ChannelOption;
+import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
@@ -17,10 +19,20 @@ import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.metadata.Usage;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.prompt.Prompt;
+import org.springframework.boot.http.client.ClientHttpRequestFactoryBuilder;
+import org.springframework.boot.http.client.ClientHttpRequestFactorySettings;
+import org.springframework.http.client.ClientHttpRequestFactory;
+import org.springframework.http.client.reactive.ReactorClientHttpConnector;
+import org.springframework.retry.support.RetryTemplate;
 import org.springframework.stereotype.Component;
 import org.springframework.util.ObjectUtils;
+import org.springframework.web.client.RestClient;
+import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Flux;
+import reactor.netty.http.client.HttpClient;
 
+import java.net.URI;
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -37,6 +49,13 @@ public class DashscopeAdapter implements ModelAdapter {
      * 支持的提供者名称
      */
     private static final Set<String> SUPPORTED_PROVIDERS = Set.of("qwen", "dashscope", "tongyi", "aliyun");
+
+    /**
+     * 重试模板：默认的 RetryUtils.DEFAULT_RETRY_TEMPLATE 是 10 次指数退避（封顶 180s），
+     * 上游不可达时单请求实测 22 分钟，必须显式换成短重试
+     */
+    @Resource
+    private RetryTemplate chatRetryTemplate;
 
     /**
      * 调用模型
@@ -154,14 +173,46 @@ public class DashscopeAdapter implements ModelAdapter {
      * 创建 DashScope ChatModel
      */
     private DashScopeChatModel createChatModel(ModelProvider provider, Model model, ChatRequest chatRequest) {
+        // 非流式走 restClient、流式走 webClient，两边都要设超时，否则另一半仍会跑满 TCP 超时
+        ClientHttpRequestFactory syncFactory = ClientHttpRequestFactoryBuilder.simple()
+                .build(ClientHttpRequestFactorySettings.defaults().withTimeouts(Duration.ofSeconds(2), Duration.ofSeconds(30)));
+        HttpClient reactorClient = HttpClient.create()
+                .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, 2000)
+                .responseTimeout(Duration.ofSeconds(60));
+
+        // 去掉 baseUrl 的兼容模式后缀与版本号
+        String nativeBaseUrl = toNativeBaseUrl(provider.getBaseUrl());
         DashScopeApi dashScopeApi = DashScopeApi.builder()
+                .baseUrl(nativeBaseUrl)
                 .apiKey(provider.getApiKey())
+                .restClientBuilder(RestClient.builder().requestFactory(syncFactory))
+                .webClientBuilder(WebClient.builder()
+                        .clientConnector(new ReactorClientHttpConnector(reactorClient)))
                 .build();
         DashScopeChatOptions options = buildOptions(model, chatRequest);
         return DashScopeChatModel.builder()
                 .dashScopeApi(dashScopeApi)
                 .defaultOptions(options)
+                .retryTemplate(chatRetryTemplate)
                 .build();
+    }
+
+    /**
+     * 取 baseUrl 的 scheme://host，丢掉兼容模式后缀与版本号。
+     * 不用字符串 replace：/compatible-mode 后面可能还跟着 /v1，只替换一段会残留
+     */
+    private String toNativeBaseUrl(String baseUrl) {
+        try {
+            URI uri = URI.create(baseUrl);
+            if (uri.getScheme() == null || uri.getAuthority() == null) {
+                log.warn("provider baseUrl 缺少 scheme/host，按原值使用：{}", baseUrl);
+                return baseUrl;
+            }
+            return uri.getScheme() + "://" + uri.getAuthority();
+        } catch (IllegalArgumentException e) {
+            log.warn("provider baseUrl 无法解析，按原值使用：{}", baseUrl);
+            return baseUrl;
+        }
     }
 
     /**

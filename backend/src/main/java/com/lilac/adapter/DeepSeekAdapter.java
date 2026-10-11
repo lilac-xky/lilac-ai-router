@@ -7,6 +7,8 @@ import com.lilac.domain.entity.ModelProvider;
 import com.lilac.enums.HttpsCodeEnum;
 import com.lilac.exception.BusinessException;
 import io.micrometer.common.util.StringUtils;
+import io.netty.channel.ChannelOption;
+import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
@@ -19,10 +21,19 @@ import org.springframework.ai.deepseek.DeepSeekAssistantMessage;
 import org.springframework.ai.deepseek.DeepSeekChatModel;
 import org.springframework.ai.deepseek.DeepSeekChatOptions;
 import org.springframework.ai.deepseek.api.DeepSeekApi;
+import org.springframework.boot.http.client.ClientHttpRequestFactoryBuilder;
+import org.springframework.boot.http.client.ClientHttpRequestFactorySettings;
+import org.springframework.http.client.ClientHttpRequestFactory;
+import org.springframework.http.client.reactive.ReactorClientHttpConnector;
+import org.springframework.retry.support.RetryTemplate;
 import org.springframework.stereotype.Component;
-import reactor.core.publisher.Flux;
 import org.springframework.util.ObjectUtils;
+import org.springframework.web.client.RestClient;
+import org.springframework.web.reactive.function.client.WebClient;
+import reactor.core.publisher.Flux;
+import reactor.netty.http.client.HttpClient;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -38,6 +49,13 @@ public class DeepSeekAdapter implements ModelAdapter {
      * 支持的提供者名称
      */
     private static final Set<String> SUPPORTED_PROVIDERS = Set.of("deepseek", "DeepSeek", "DEEPSEEK", "ds");
+
+    /**
+     * 重试模板：默认的 RetryUtils.DEFAULT_RETRY_TEMPLATE 是 10 次指数退避（封顶 180s），
+     * 上游不可达时单请求实测 22 分钟，必须显式换成短重试
+     */
+    @Resource
+    private RetryTemplate chatRetryTemplate;
 
     /**
      * 调用模型
@@ -154,9 +172,19 @@ public class DeepSeekAdapter implements ModelAdapter {
      * 创建 DeepSeek ChatModel
      */
     private DeepSeekChatModel createChatModel(ModelProvider provider, Model model) {
+        // 非流式走 restClient、流式走 webClient，两边都要设超时，否则另一半仍会跑满 TCP 超时
+        ClientHttpRequestFactory syncFactory = ClientHttpRequestFactoryBuilder.simple()
+                .build(ClientHttpRequestFactorySettings.defaults().withTimeouts(Duration.ofSeconds(2), Duration.ofSeconds(30)));
+        HttpClient reactorClient = HttpClient.create()
+                .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, 2000)
+                .responseTimeout(Duration.ofSeconds(60));
+
         DeepSeekApi deepSeekApi = DeepSeekApi.builder()
                 .baseUrl(provider.getBaseUrl())
                 .apiKey(provider.getApiKey())
+                .restClientBuilder(RestClient.builder().requestFactory(syncFactory))
+                .webClientBuilder(WebClient.builder()
+                        .clientConnector(new ReactorClientHttpConnector(reactorClient)))
                 .build();
         DeepSeekChatOptions options = DeepSeekChatOptions.builder()
                 .model(model.getModelKey())
@@ -164,6 +192,7 @@ public class DeepSeekAdapter implements ModelAdapter {
         return DeepSeekChatModel.builder()
                 .deepSeekApi(deepSeekApi)
                 .defaultOptions(options)
+                .retryTemplate(chatRetryTemplate)
                 .build();
     }
 
