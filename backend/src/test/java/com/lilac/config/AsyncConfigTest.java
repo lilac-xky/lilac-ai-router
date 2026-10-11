@@ -17,7 +17,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class AsyncConfigTest extends IntegrationTestSupport {
 
-    @Resource(name = "applicationTaskExecutor")
+    // 异步任务执行器
+    @Resource(name = "taskExecutor")
     private ThreadPoolTaskExecutor executor;
 
     @Test
