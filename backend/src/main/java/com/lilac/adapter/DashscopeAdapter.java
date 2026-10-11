@@ -17,8 +17,12 @@ import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.SystemMessage;
 import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.metadata.Usage;
+import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.prompt.Prompt;
+import org.springframework.ai.openai.OpenAiChatModel;
+import org.springframework.ai.openai.OpenAiChatOptions;
+import org.springframework.ai.openai.api.OpenAiApi;
 import org.springframework.boot.http.client.ClientHttpRequestFactoryBuilder;
 import org.springframework.boot.http.client.ClientHttpRequestFactorySettings;
 import org.springframework.http.client.ClientHttpRequestFactory;
@@ -51,6 +55,11 @@ public class DashscopeAdapter implements ModelAdapter {
     private static final Set<String> SUPPORTED_PROVIDERS = Set.of("qwen", "dashscope", "tongyi", "aliyun");
 
     /**
+     * 兼容模式
+     */
+    private static final String COMPATIBLE_MODE_SEGMENT = "compatible-mode";
+
+    /**
      * 重试模板：默认的 RetryUtils.DEFAULT_RETRY_TEMPLATE 是 10 次指数退避（封顶 180s），
      * 上游不可达时单请求实测 22 分钟，必须显式换成短重试
      */
@@ -68,8 +77,8 @@ public class DashscopeAdapter implements ModelAdapter {
     @Override
     public ChatResponse invoke(Model model, ModelProvider provider, ChatRequest chatRequest) {
         try {
-            DashScopeChatModel chatModel = createChatModel(provider, model, chatRequest);
-            Prompt prompt = buildPrompt(chatRequest);
+            ChatModel chatModel = createChatModel(provider, model, chatRequest);
+            Prompt prompt = buildPrompt(chatRequest, model.getModelKey(), isCompatibleMode(provider));
             return chatModel.call(prompt);
         } catch (Exception e) {
             log.error("DashScope 适配器调用模型 {} 失败", model.getModelKey(), e);
@@ -88,8 +97,8 @@ public class DashscopeAdapter implements ModelAdapter {
     @Override
     public Flux<ChatResponse> invokeStream(Model model, ModelProvider provider, ChatRequest chatRequest) {
         try {
-            DashScopeChatModel chatModel = createChatModel(provider, model, chatRequest);
-            Prompt prompt = buildPrompt(chatRequest);
+            ChatModel chatModel = createChatModel(provider, model, chatRequest);
+            Prompt prompt = buildPrompt(chatRequest, model.getModelKey(), isCompatibleMode(provider));
             return chatModel.stream(prompt);
         } catch (Exception e) {
             log.error("DashScope 适配器流式调用模型 {} 失败", model.getModelKey(), e);
@@ -170,9 +179,28 @@ public class DashscopeAdapter implements ModelAdapter {
     }
 
     /**
-     * 创建 DashScope ChatModel
+     * 创建 ChatModel：按 baseUrl 决定走百炼的原生协议还是 OpenAI 兼容协议
      */
-    private DashScopeChatModel createChatModel(ModelProvider provider, Model model, ChatRequest chatRequest) {
+    private ChatModel createChatModel(ModelProvider provider, Model model, ChatRequest chatRequest) {
+        return isCompatibleMode(provider)
+                ? createCompatibleChatModel(provider, model, chatRequest)
+                : createNativeChatModel(provider, model, chatRequest);
+    }
+
+    /**
+     * baseUrl 里带 compatible-mode 就是兼容协议。
+     * 库里两种地址都可能存在：共享域名常用 /compatible-mode，业务空间专属域名只有兼容协议
+     */
+    private boolean isCompatibleMode(ModelProvider provider) {
+        String baseUrl = provider.getBaseUrl();
+        return baseUrl != null && baseUrl.contains(COMPATIBLE_MODE_SEGMENT);
+    }
+
+    /**
+     * 兼容协议：复用 OpenAiApi，baseUrl 原样传入。
+     * OpenAiApi 内部已写死 /v1/chat/completions，所以 baseUrl 末尾不能再带 /v1，否则拼成 /v1/v1/
+     */
+    private ChatModel createCompatibleChatModel(ModelProvider provider, Model model, ChatRequest chatRequest) {
         // 非流式走 restClient、流式走 webClient，两边都要设超时，否则另一半仍会跑满 TCP 超时
         ClientHttpRequestFactory syncFactory = ClientHttpRequestFactoryBuilder.simple()
                 .build(ClientHttpRequestFactorySettings.defaults().withTimeouts(Duration.ofSeconds(2), Duration.ofSeconds(30)));
@@ -180,7 +208,40 @@ public class DashscopeAdapter implements ModelAdapter {
                 .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, 2000)
                 .responseTimeout(Duration.ofSeconds(60));
 
-        // 去掉 baseUrl 的兼容模式后缀与版本号
+        OpenAiApi openAiApi = OpenAiApi.builder()
+                .baseUrl(provider.getBaseUrl())
+                .apiKey(provider.getApiKey())
+                .restClientBuilder(RestClient.builder().requestFactory(syncFactory))
+                .webClientBuilder(WebClient.builder()
+                        .clientConnector(new ReactorClientHttpConnector(reactorClient)))
+                .build();
+        OpenAiChatOptions.Builder optionsBuilder = OpenAiChatOptions.builder()
+                .model(model.getModelKey())
+                .streamUsage(true);
+        // 原生协议用 enable_thinking，兼容模式下同一个开关通过 extraBody 透传，否则深度思考会静默失效
+        if (chatRequest.getEnableReasoning() != null && chatRequest.getEnableReasoning()
+                && model.getSupportReasoning() != null && model.getSupportReasoning() == 1) {
+            optionsBuilder.extraBody(Map.of("enable_thinking", true));
+        }
+        return OpenAiChatModel.builder()
+                .openAiApi(openAiApi)
+                .defaultOptions(optionsBuilder.build())
+                .retryTemplate(chatRetryTemplate)
+                .build();
+    }
+
+    /**
+     * 原生协议：DashScopeApi 自己拼 /api/v1/services/aigc/...，
+     * 所以 baseUrl 只能保留 scheme://host，多一段路径就会错位
+     */
+    private ChatModel createNativeChatModel(ModelProvider provider, Model model, ChatRequest chatRequest) {
+        // 非流式走 restClient、流式走 webClient，两边都要设超时，否则另一半仍会跑满 TCP 超时
+        ClientHttpRequestFactory syncFactory = ClientHttpRequestFactoryBuilder.simple()
+                .build(ClientHttpRequestFactorySettings.defaults().withTimeouts(Duration.ofSeconds(2), Duration.ofSeconds(30)));
+        HttpClient reactorClient = HttpClient.create()
+                .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, 2000)
+                .responseTimeout(Duration.ofSeconds(60));
+
         String nativeBaseUrl = toNativeBaseUrl(provider.getBaseUrl());
         DashScopeApi dashScopeApi = DashScopeApi.builder()
                 .baseUrl(nativeBaseUrl)
@@ -238,13 +299,24 @@ public class DashscopeAdapter implements ModelAdapter {
     }
 
     /**
-     * 构建 Prompt
+     * 构建 Prompt。
+     * 兼容协议要自带 options（OpenAiChatModel 不会替我们带上模型名），原生协议的 options 已挂在 model 上
      */
-    private Prompt buildPrompt(ChatRequest chatRequest) {
+    private Prompt buildPrompt(ChatRequest chatRequest, String modelKey, boolean compatibleMode) {
         List<Message> messages = chatRequest.getMessages().stream()
                 .map(this::convertMessage)
                 .collect(Collectors.toList());
-        return new Prompt(messages);
+        if (!compatibleMode) {
+            return new Prompt(messages);
+        }
+        OpenAiChatOptions.Builder optionsBuilder = OpenAiChatOptions.builder().model(modelKey);
+        if (chatRequest.getTemperature() != null) {
+            optionsBuilder.temperature(chatRequest.getTemperature());
+        }
+        if (chatRequest.getMaxTokens() != null) {
+            optionsBuilder.maxTokens(chatRequest.getMaxTokens());
+        }
+        return new Prompt(messages, optionsBuilder.build());
     }
 
     /**
