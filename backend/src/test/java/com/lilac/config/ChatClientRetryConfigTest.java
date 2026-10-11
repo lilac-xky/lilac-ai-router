@@ -2,6 +2,7 @@ package com.lilac.config;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.springframework.ai.retry.NonTransientAiException;
 import org.springframework.ai.retry.TransientAiException;
 import org.springframework.retry.support.RetryTemplate;
 import org.springframework.web.client.ResourceAccessException;
@@ -58,6 +59,21 @@ class ChatClientRetryConfigTest {
         })).isInstanceOf(IllegalStateException.class);
 
         assertThat(calls.get()).as("不在 retryOn 列表里的异常必须一次就放弃").isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("NonTransientAiException（403 配额用尽）一次就放弃，不能重试")
+    void nonTransientAiException_isNotRetried() {
+        AtomicInteger calls = new AtomicInteger();
+
+        assertThatThrownBy(() -> template.execute(ctx -> {
+            calls.incrementAndGet();
+            throw new NonTransientAiException("403 AllocationQuota.FreeTierOnly");
+        })).isInstanceOf(NonTransientAiException.class);
+
+        assertThat(calls.get())
+                .as("403 重试改变不了账户配额，只会让用户多等一次往返")
+                .isEqualTo(1);
     }
 
     @Test
