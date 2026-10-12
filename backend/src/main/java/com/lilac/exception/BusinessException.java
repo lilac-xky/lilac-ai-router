@@ -18,4 +18,10 @@ public class BusinessException extends RuntimeException {
         super(customMessage);
         this.code = httpsCodeEnum.getCode();
     }
+
+    // 可选：接收枚举、自定义消息和异常
+    public BusinessException(HttpsCodeEnum httpsCodeEnum, String customMessage, Throwable cause) {
+        super(customMessage, cause);
+        this.code = httpsCodeEnum.getCode();
+    }
 }

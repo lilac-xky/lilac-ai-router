@@ -22,6 +22,8 @@ public class ModelInvokeServiceImpl implements ModelInvokeService {
     
     @Resource
     private ModelAdapterFactory adapterFactory;
+    @Resource
+    private ProviderCircuitBreaker providerCircuitBreaker;
 
     /**
      * 调用模型
@@ -36,8 +38,8 @@ public class ModelInvokeServiceImpl implements ModelInvokeService {
         log.info("调用模型: provider={}, model={}", provider.getProviderName(), model.getModelKey());
         // 根据提供者获取对应的适配器
         ModelAdapter adapter = adapterFactory.getAdapter(provider.getProviderName());
-        // 使用适配器调用模型
-        return adapter.invoke(model, provider, chatRequest);
+        // 使用适配器调用模型（外面套一层按 provider 隔离的熔断闸门）
+        return providerCircuitBreaker.invoke(model, provider, () -> adapter.invoke(model, provider, chatRequest));
     }
 
     /**
@@ -71,6 +73,6 @@ public class ModelInvokeServiceImpl implements ModelInvokeService {
         // 根据提供者获取对应的适配器
         ModelAdapter adapter = adapterFactory.getAdapter(provider.getProviderName());
         // 使用适配器流式调用模型，返回统一格式的响应块
-        return adapter.invokeStreamChunk(model, provider, chatRequest);
+        return providerCircuitBreaker.invokeStreamChunk(model, provider, () -> adapter.invokeStreamChunk(model, provider, chatRequest));
     }
 }

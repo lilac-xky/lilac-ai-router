@@ -82,7 +82,7 @@ public class DashscopeAdapter implements ModelAdapter {
             return chatModel.call(prompt);
         } catch (Exception e) {
             log.error("DashScope 适配器调用模型 {} 失败", model.getModelKey(), e);
-            throw new BusinessException(HttpsCodeEnum.SYSTEM_ERROR, "调用模型失败: " + e.getMessage());
+            throw new BusinessException(HttpsCodeEnum.SYSTEM_ERROR, "调用模型失败: " + e.getMessage(), e);
         }
     }
 
@@ -102,7 +102,7 @@ public class DashscopeAdapter implements ModelAdapter {
             return chatModel.stream(prompt);
         } catch (Exception e) {
             log.error("DashScope 适配器流式调用模型 {} 失败", model.getModelKey(), e);
-            throw new BusinessException(HttpsCodeEnum.SYSTEM_ERROR, "流式调用模型失败: " + e.getMessage());
+            throw new BusinessException(HttpsCodeEnum.SYSTEM_ERROR, "流式调用模型失败: " + e.getMessage(), e);
         }
     }
 

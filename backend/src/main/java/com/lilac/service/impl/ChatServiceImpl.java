@@ -102,7 +102,7 @@ public class ChatServiceImpl implements ChatService {
         // 选择主模型
         Model selectedModel = routingService.selectModel(strategyType, MODEL_TYPE_CHAT, requestedModel);
         if (selectedModel == null) {
-            throw new BusinessException(HttpsCodeEnum.PARAMS_ERROR, "没有可用的模型");
+            throw new BusinessException(HttpsCodeEnum.NO_AVAILABLE_MODEL, "没有可用的模型");
         }
         // 获取 Fallback 模型列表
         List<Model> fallbackModels = routingService.getFallbackModels(strategyType, MODEL_TYPE_CHAT, requestedModel);
@@ -129,7 +129,7 @@ public class ChatServiceImpl implements ChatService {
         String strategyType = determineStrategyType(chatRequest.getRoutingStrategy(), requestedModel);
         Model selectedModel = routingService.selectModel(strategyType, MODEL_TYPE_CHAT, requestedModel);
         if (selectedModel == null) {
-            throw new BusinessException(HttpsCodeEnum.PARAMS_ERROR, "没有可用的模型");
+            throw new BusinessException(HttpsCodeEnum.NO_AVAILABLE_MODEL, "没有可用的模型");
         }
         List<Model> fallbackModels = routingService.getFallbackModels(strategyType, MODEL_TYPE_CHAT, requestedModel);
 
@@ -144,6 +144,14 @@ public class ChatServiceImpl implements ChatService {
                 }
                 log.warn("模型 {} 流式调用失败，回退到备选模型 {}", selectedModel.getModelKey(), fallbackModel.getModelKey(), e);
                 return streamWithModel(fallbackModel, chatRequest, userId, apiKeyId, startTime);
+            });
+        } else {
+            // 无备选：只在主模型真的失败时补一行日志，否则和「降级成功」在客户端看起来一样
+            stream = stream.onErrorResume(e -> {
+                if (!(e instanceof CallRejectedException)) {
+                    log.error("模型 {} 流式调用失败，且没有可用的备选模型（本次降级机会为 0）", selectedModel.getModelKey(), e);
+                }
+                return Flux.error(e);
             });
         }
         return stream;
@@ -175,6 +183,9 @@ public class ChatServiceImpl implements ChatService {
                         log.warn("Fallback 模型 {} 调用失败", fallbackModel.getModelKey(), fallbackException);
                     }
                 }
+            } else {
+                // 没有备选可试：这行是「降级静默失效」的唯一线索，否则客户端只拿到 500，日志里看不出没降级过
+                log.error("模型 {} 调用失败，且没有可用的备选模型（本次降级机会为 0）", primaryModel.getModelKey(), e);
             }
             throw new BusinessException(HttpsCodeEnum.SYSTEM_ERROR, "调用模型失败: " + e.getMessage());
         }

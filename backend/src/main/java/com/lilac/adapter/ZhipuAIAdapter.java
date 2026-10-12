@@ -51,7 +51,7 @@ public class ZhipuAIAdapter implements ModelAdapter {
             return convertToChatResponse(response);
         } catch (Exception e) {
             log.error("智谱 AI 适配器调用模型 {} 失败", model.getModelKey(), e);
-            throw new BusinessException(HttpsCodeEnum.SYSTEM_ERROR, "调用模型失败: " + e.getMessage());
+            throw new BusinessException(HttpsCodeEnum.SYSTEM_ERROR, "调用模型失败: " + e.getMessage(), e);
         }
     }
 
@@ -78,7 +78,7 @@ public class ZhipuAIAdapter implements ModelAdapter {
                     .map(this::convertModelDataToChatResponse);
         } catch (Exception e) {
             log.error("智谱 AI 适配器流式调用模型 {} 失败", model.getModelKey(), e);
-            throw new BusinessException(HttpsCodeEnum.SYSTEM_ERROR, "流式调用模型失败: " + e.getMessage());
+            throw new BusinessException(HttpsCodeEnum.SYSTEM_ERROR, "流式调用模型失败: " + e.getMessage(), e);
         }
     }
 
@@ -107,7 +107,7 @@ public class ZhipuAIAdapter implements ModelAdapter {
                     .filter(chunk -> !chunk.isEmpty());
         } catch (Exception e) {
             log.error("智谱 AI 适配器流式调用模型 {} 失败", model.getModelKey(), e);
-            throw new BusinessException(HttpsCodeEnum.SYSTEM_ERROR, "流式调用模型失败: " + e.getMessage());
+            throw new BusinessException(HttpsCodeEnum.SYSTEM_ERROR, "流式调用模型失败: " + e.getMessage(), e);
         }
     }
 

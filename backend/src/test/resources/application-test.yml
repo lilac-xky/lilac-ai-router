@@ -51,3 +51,8 @@ logging:
 lilac:
   health-check:
     enabled: false
+  # 熔断器默认开着不影响单测：ModelInvokeService 在测试里是 @Mock，不会真的进熔断闸门。
+  # 这里显式关掉是为了将来有人写"真调适配器"的集成测试时，不会因为前面用例累积的失败
+  # 让熔断器打开，从而得到一个与被测逻辑无关的失败。
+  circuit-breaker:
+    enabled: false
