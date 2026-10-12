@@ -53,6 +53,11 @@ public class HealthCheckServiceImpl implements HealthCheckService {
     // 健康探测的超时时间（秒）
     private static final int PROBE_TIMEOUT_SECONDS = 5;
 
+    // 探测结果三态：服务可达 / 探测明确失败 / 没拿到可信信号（无 baseUrl、或本次没探）
+    private enum ProbeState { UP, DOWN, NO_SIGNAL }
+    // 最近一次探测结果，只代表当前这一次，不做滑动窗口
+    private final ConcurrentHashMap<Long, Boolean> latestProbeResult = new ConcurrentHashMap<>();
+
     // 综合得分各维度权重（合计为 1.0）
     private static final double COST_WEIGHT = 0.3;
     private static final double LATENCY_WEIGHT = 0.3;
@@ -95,25 +100,27 @@ public class HealthCheckServiceImpl implements HealthCheckService {
             // 测量延迟
             long startTime = System.currentTimeMillis();
             boolean isHealthy = sendHealthCheckRequest(provider);
-            long endTime = System.currentTimeMillis();
-            int latency = (int) (endTime - startTime);
+            int latency = (int) (System.currentTimeMillis() - startTime);
+            // 写入最新探测结果
+            latestProbeResult.put(provider.getId(), isHealthy);
             // 记录健康检查结果
             recordHealthCheckResult(provider.getId(), isHealthy);
             // 计算成功率
             BigDecimal successRate = calculateSuccessRate(provider.getId());
             // 确定健康状态
-            String healthStatus = determineHealthStatus(successRate);
-            // 更新提供者的健康信息
-            modelProviderService.updateHealthStatus(provider.getId(), healthStatus, latency, successRate);
+            String healthStatus = resolveHealthStatus(provider.getId(), successRate);
+            // 更新提供者健康状态
+            if (isHealthy) {
+                modelProviderService.updateHealthStatus(provider.getId(), healthStatus, latency, successRate);
+            }
             log.debug("提供者 {} 健康检查完成: 健康={}, 延迟={}ms, 成功率={}%", provider.getDisplayName(), isHealthy, latency, successRate);
             return isHealthy;
         } catch (Exception e) {
+            // 探测本身抛异常也算这一轮不可达
+            latestProbeResult.put(provider.getId(), false);
             log.error("提供者 {} 健康检查失败", provider.getDisplayName(), e);
             // 记录失败
             recordHealthCheckResult(provider.getId(), false);
-            BigDecimal successRate = calculateSuccessRate(provider.getId());
-            // 更新为不健康状态
-            modelProviderService.updateHealthStatus(provider.getId(), HealthStatusEnum.UNHEALTHY.getValue(), 0, successRate);
             return false;
         }
     }
@@ -143,11 +150,23 @@ public class HealthCheckServiceImpl implements HealthCheckService {
 
         // 更新每个模型的指标
         for (Model model : activeModels) {
-            ModelStats stats = modelStatsMap.getOrDefault(model.getId(), new ModelStats());
+            ModelStats stats = modelStatsMap.get(model.getId());
+            if (stats == null) {
+                // 24h 内无日志：只能靠探测结果，指标必须保持上一条真实观测值，用 0/100 这类合法值填「不知道」，会同时骗过评分和界面
+                String noDataStatus = resolveHealthStatus(model.getProviderId(), null);
+                if (!noDataStatus.equals(model.getHealthStatus())) {
+                    log.info("模型 {} 健康状态 {} → {}（24h 内无请求日志，保留原指标 延迟={}ms 成功率={}%）",
+                            model.getModelKey(), model.getHealthStatus(), noDataStatus,
+                            model.getAvgLatency(), model.getSuccessRate());
+                }
+                // 只改健康状态，用读到的原值回写指标，等价于「只更新一列」
+                modelService.updateModelMetrics(model.getId(), noDataStatus, model.getAvgLatency(), model.getSuccessRate(), model.getScore());
+                continue;
+            }
             // 计算综合得分
             BigDecimal score = calculateScore(model, stats, normParams);
             // 根据成功率确定健康状态
-            String healthStatus = determineHealthStatusBySuccessRate(stats.successRate);
+            String healthStatus = resolveHealthStatus(model.getProviderId(), stats.successRate);
             // 更新模型指标
             modelService.updateModelMetrics(model.getId(), healthStatus, stats.avgLatency, stats.successRate, score);
             log.debug("模型 {} 指标更新: 延迟={}ms, 成功率={}%, 得分={}", model.getModelKey(), stats.avgLatency, stats.successRate, score);
@@ -177,7 +196,7 @@ public class HealthCheckServiceImpl implements HealthCheckService {
             // 任意 HTTP 状态码都说明服务可达
             return response.statusCode() > 0;
         } catch (Exception e) {
-            log.warn("提供者 {} 健康探测失败: {}", provider.getDisplayName(), e.getMessage());
+            log.warn("提供者 {} 健康探测失败: {}: {}", provider.getDisplayName(), e.getClass().getSimpleName(), e.getMessage());
             return false;
         }
     }
@@ -220,9 +239,7 @@ public class HealthCheckServiceImpl implements HealthCheckService {
             ModelStats stats = new ModelStats();
             stats.modelId = modelId;
             stats.avgLatency = (int) Math.round(avgLatency);
-            stats.successRate = total == 0
-                    ? BigDecimal.valueOf(100.00)
-                    : BigDecimal.valueOf(success * 100.0 / total).setScale(2, RoundingMode.HALF_UP);
+            stats.successRate = BigDecimal.valueOf(success * 100.0 / total).setScale(2, RoundingMode.HALF_UP);
             result.add(stats);
         }
         return result;
@@ -345,10 +362,33 @@ public class HealthCheckServiceImpl implements HealthCheckService {
     }
 
     /**
-     * 根据成功率确定健康状态（与提供者口径一致）
+     * 模型健康状态：探测可通是硬门槛，只有可达时 request_log 成功率才决定 healthy 还是 degraded
+     *
+     * @param successRate 24h 窗口成功率；窗口内没有日志时传 null
      */
-    private String determineHealthStatusBySuccessRate(BigDecimal successRate) {
-        return determineHealthStatus(successRate);
+    private String resolveHealthStatus(Long providerId, BigDecimal successRate) {
+        ProbeState probe = probeStateOf(providerId);
+        if (probe == ProbeState.DOWN) {
+            // 上游不可达，排除出候选池是对的；每 30s 会重新探测，恢复后自动解锁
+            return HealthStatusEnum.UNHEALTHY.getValue();
+        }
+        if (probe == ProbeState.NO_SIGNAL || successRate == null) {
+            // 「没测过」既不能当满分，也不能据此把模型排除出候选池
+            return HealthStatusEnum.UNKNOWN.getValue();
+        }
+        // 可达且成功率 >= 50% 才是 healthy，否则是 degraded
+        return successRate.doubleValue() >= 50.0 ? determineHealthStatus(successRate) : HealthStatusEnum.DEGRADED.getValue();
+    }
+
+    /**
+     * 获取探测状态
+     */
+    private ProbeState probeStateOf(Long providerId) {
+        if (providerId == null) {
+            return ProbeState.NO_SIGNAL;
+        }
+        Boolean up = latestProbeResult.get(providerId);
+        return up == null ? ProbeState.NO_SIGNAL : (up ? ProbeState.UP : ProbeState.DOWN);
     }
 
     /**
@@ -412,7 +452,7 @@ public class HealthCheckServiceImpl implements HealthCheckService {
     static class ModelStats {
         Long modelId;
         int avgLatency = 0;
-        BigDecimal successRate = BigDecimal.valueOf(100.00);
+        BigDecimal successRate;
     }
 
     /**
