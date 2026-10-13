@@ -184,4 +184,35 @@ public class AIMetricsCollector {
                         .register(meterRegistry)
         );
     }
+
+    /**
+     * 记录健康探针成功时的 TTFT（首 token 耗时）。
+     * 与 {@code ai.response.time}（端到端响应时间）刻意分开：探针的价值就在「首字节等了多久」，
+     * 混进端到端会把生成时间算进去，看不出上游变慢还是输出变长
+     */
+    public void recordProbeSuccess(String providerName, String modelKey, long ttftMillis) {
+        Timer.builder("ai.probe.ttft")
+                .description("健康探针首 token 耗时")
+                .tag("provider", safe(providerName))
+                .tag("model", safe(modelKey))
+                .register(meterRegistry)
+                .record(ttftMillis, TimeUnit.MILLISECONDS);
+    }
+
+    /**
+     * 记录探针失败，按分类打标签 —— 这是「可达但全错」能被看见的地方
+     */
+    public void recordProbeFailure(String providerName, String modelKey, String failureKind) {
+        Counter.builder("ai.probe.failed")
+                .description("健康探针失败次数（按错误分类）")
+                .tag("provider", safe(providerName))
+                .tag("model", safe(modelKey))
+                .tag("kind", safe(failureKind))
+                .register(meterRegistry)
+                .increment();
+    }
+
+    private static String safe(String value) {
+        return value != null ? value : "unknown";
+    }
 }
