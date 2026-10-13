@@ -37,7 +37,6 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 
@@ -58,18 +57,13 @@ public class HealthCheckServiceImpl implements HealthCheckService {
     private ModelAdapterFactory adapterFactory;
     @Resource
     private AIMetricsCollector aiMetricsCollector;
+    @Resource
+    private ProbeWindowStore probeWindowStore;
 
-    // 存储最近的健康检查结果（滑动窗口）
-    private final ConcurrentHashMap<Long, List<Boolean>> healthHistoryMap = new ConcurrentHashMap<>();
-    // 健康检查历史记录最大数量
-    private static final int MAX_HISTORY_SIZE = 100;
     // 统计请求日志的时间范围（小时）
     private static final int STATS_HOURS = 24;
     // 裸 GET 探测的超时时间（秒）
     private static final int PROBE_TIMEOUT_SECONDS = 5;
-
-    // 存储最新的健康检查结果
-    private final ConcurrentHashMap<Long, ProbeResult> latestProbeResult = new ConcurrentHashMap<>();
 
     // probe 开关：关掉后退回裸 GET（只判可达性），便于二分定位与省费用
     @Value("${lilac.health-check.real-probe.enabled:true}")
@@ -131,28 +125,25 @@ public class HealthCheckServiceImpl implements HealthCheckService {
                 // 没有可探的 chat 模型（或真 probe 被关掉）：退回裸 GET，只能判可达性
                 result = fallbackReachabilityProbe(provider);
             }
-            // 写入最新探测结果
-            latestProbeResult.put(provider.getId(), result);
-            // 记录健康检查结果
-            recordHealthCheckResult(provider.getId(), result.isSuccess());
-            // 计算成功率
-            BigDecimal successRate = calculateSuccessRate(provider.getId());
+            // 写入滑动窗口（Redis ZSET），失败会降级成「无样本」而不是让整轮挂掉
+            probeWindowStore.record(provider.getId(), result);
+            // 窗口成功率：只读一次，避免同一轮里两次 Redis 往返
+            BigDecimal successRate = probeWindowStore.successRate(provider.getId());
             // 确定健康状态
             String healthStatus = resolveHealthStatus(provider.getId(), successRate);
             // 失败也要落库：只更新模型表会让 provider 表一直停在 healthy，
             // 两处状态不一致，排查时按 provider 表看就会得出「一切正常」的错误结论
             modelProviderService.updateHealthStatus(provider.getId(), healthStatus,
                     result.isSuccess() ? result.ttftMillis() : provider.getAvgLatency(), successRate);
-            log.debug("提供者 {} 健康检查完成: 成功={}, 失败类型={}, TTFT={}ms, 总耗时={}ms, 成功率={}%",
+            log.debug("提供者 {} 健康检查完成: 成功={}, 失败类型={}, TTFT={}ms, 总耗时={}ms",
                     provider.getDisplayName(), result.isSuccess(), result.failureKind(),
-                    result.ttftMillis(), result.totalMillis(), successRate);
+                    result.ttftMillis(), result.totalMillis());
             return result.isSuccess();
         } catch (Exception e) {
             // 探测本身抛异常也算这一轮失败；归类后仍走统一判定，避免把限流之类误判成不可达
             ProbeFailureKind kind = ProbeFailureKind.classify(e);
-            latestProbeResult.put(provider.getId(), ProbeResult.failure(kind, 0));
+            probeWindowStore.record(provider.getId(), ProbeResult.failure(kind, 0));
             log.error("提供者 {} 健康检查异常（归类={}）", provider.getDisplayName(), kind, e);
-            recordHealthCheckResult(provider.getId(), false);
             return false;
         }
     }
@@ -326,31 +317,6 @@ public class HealthCheckServiceImpl implements HealthCheckService {
     }
 
     /**
-     * 发送健康探测请求：能拿到任意 HTTP 响应即视为可达
-     */
-    private boolean sendHealthCheckRequest(ModelProvider provider) {
-        if (provider.getBaseUrl() == null || provider.getBaseUrl().isBlank()) {
-            return false;
-        }
-        try {
-            HttpClient client = HttpClient.newBuilder()
-                    .connectTimeout(Duration.ofSeconds(PROBE_TIMEOUT_SECONDS))
-                    .build();
-            HttpRequest request = HttpRequest.newBuilder()
-                    .uri(URI.create(provider.getBaseUrl()))
-                    .timeout(Duration.ofSeconds(PROBE_TIMEOUT_SECONDS))
-                    .GET()
-                    .build();
-            HttpResponse<Void> response = client.send(request, HttpResponse.BodyHandlers.discarding());
-            // 任意 HTTP 状态码都说明服务可达
-            return response.statusCode() > 0;
-        } catch (Exception e) {
-            log.warn("提供者 {} 健康探测失败: {}: {}", provider.getDisplayName(), e.getClass().getSimpleName(), e.getMessage());
-            return false;
-        }
-    }
-
-    /**
      * 从请求日志聚合各模型的统计数据
      */
     private List<ModelStats> queryModelStatsFromDb(LocalDateTime startTime, List<Model> activeModels) {
@@ -467,37 +433,7 @@ public class HealthCheckServiceImpl implements HealthCheckService {
     }
 
     /**
-     * 记录健康检查结果
-     */
-    private void recordHealthCheckResult(Long providerId, boolean success) {
-        List<Boolean> history = healthHistoryMap.computeIfAbsent(
-                providerId,
-                k -> new ArrayList<>()
-        );
-        history.add(success);
-        // 只保留最近 100 次
-        if (history.size() > MAX_HISTORY_SIZE) {
-            history.remove(0);
-        }
-    }
-
-    /**
-     * 计算成功率
-     */
-    private BigDecimal calculateSuccessRate(Long providerId) {
-        List<Boolean> history = healthHistoryMap.get(providerId);
-        if (history == null || history.isEmpty()) {
-            return BigDecimal.valueOf(100.00);
-        }
-        long successCount = history.stream()
-                .filter(result -> result)
-                .count();
-        double rate = (successCount * 100.0) / history.size();
-        return BigDecimal.valueOf(rate).setScale(2, RoundingMode.HALF_UP);
-    }
-
-    /**
-     * 根据成功率确定健康状态
+     * 根据成功率确定健康状态（80 以上健康、50 以上降级、否则不健康）
      */
     private String determineHealthStatus(BigDecimal successRate) {
         double rate = successRate.doubleValue();
@@ -516,7 +452,7 @@ public class HealthCheckServiceImpl implements HealthCheckService {
      * @param successRate 24h 窗口成功率；窗口内没有日志时传 null
      */
     private String resolveHealthStatus(Long providerId, BigDecimal successRate) {
-        ProbeResult probe = latestProbeResult.get(providerId);
+        ProbeResult probe = probeWindowStore.latest(providerId);
         if (probe != null && !probe.isSuccess()) {
             return probe.failureKind().shouldExcludeFromRouting()
                     ? HealthStatusEnum.UNHEALTHY.getValue()
