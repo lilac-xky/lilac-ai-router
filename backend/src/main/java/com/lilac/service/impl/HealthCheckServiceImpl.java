@@ -87,6 +87,12 @@ public class HealthCheckServiceImpl implements HealthCheckService {
     private static final double PRIORITY_WEIGHT = 0.1;
 
     /**
+     * 样本量下限：24h 窗口内样本少于这个数时，不据成功率改写健康状态。
+     */
+    @Value("${lilac.health-check.min-samples:5}")
+    private int minSamples = 5;
+
+    /**
      * 检查所有提供者的健康状态
      */
     @Override
@@ -129,8 +135,8 @@ public class HealthCheckServiceImpl implements HealthCheckService {
             probeWindowStore.record(provider.getId(), result);
             // 窗口成功率：只读一次，避免同一轮里两次 Redis 往返
             BigDecimal successRate = probeWindowStore.successRate(provider.getId());
-            // 确定健康状态
-            String healthStatus = resolveHealthStatus(provider.getId(), successRate);
+            // 确定健康状态（探针样本太少时不动状态）
+            String healthStatus = resolveHealthStatus(provider.getId(), successRate, probeWindowStore.sampleSize(provider.getId()));
             // 失败也要落库：只更新模型表会让 provider 表一直停在 healthy，
             // 两处状态不一致，排查时按 provider 表看就会得出「一切正常」的错误结论
             modelProviderService.updateHealthStatus(provider.getId(), healthStatus,
@@ -291,12 +297,13 @@ public class HealthCheckServiceImpl implements HealthCheckService {
         // 更新每个模型的指标
         for (Model model : activeModels) {
             ModelStats stats = modelStatsMap.get(model.getId());
-            if (stats == null) {
-                // 24h 内无日志：只能靠探测结果，指标必须保持上一条真实观测值，用 0/100 这类合法值填「不知道」，会同时骗过评分和界面
-                String noDataStatus = resolveHealthStatus(model.getProviderId(), null);
+            if (stats == null || stats.sampleCount < minSamples) {
+                String reason = stats == null ? "24h 内无请求日志"
+                        : "24h 内仅 " + stats.sampleCount + " 条样本（低于下限 " + minSamples + "）";
+                String noDataStatus = resolveHealthStatus(model.getProviderId(), null, 0);
                 if (!noDataStatus.equals(model.getHealthStatus())) {
-                    log.info("模型 {} 健康状态 {} → {}（24h 内无请求日志，保留原指标 延迟={}ms 成功率={}%）",
-                            model.getModelKey(), model.getHealthStatus(), noDataStatus,
+                    log.info("模型 {} 健康状态 {} → {}（{}，保留原指标 延迟={}ms 成功率={}%）",
+                            model.getModelKey(), model.getHealthStatus(), noDataStatus, reason,
                             model.getAvgLatency(), model.getSuccessRate());
                 }
                 // 只改健康状态，用读到的原值回写指标，等价于「只更新一列」
@@ -306,10 +313,11 @@ public class HealthCheckServiceImpl implements HealthCheckService {
             // 计算综合得分
             BigDecimal score = calculateScore(model, stats, normParams);
             // 根据成功率确定健康状态
-            String healthStatus = resolveHealthStatus(model.getProviderId(), stats.successRate);
+            String healthStatus = resolveHealthStatus(model.getProviderId(), stats.successRate, stats.sampleCount);
             // 更新模型指标
             modelService.updateModelMetrics(model.getId(), healthStatus, stats.avgLatency, stats.successRate, score);
-            log.debug("模型 {} 指标更新: 延迟={}ms, 成功率={}%, 得分={}", model.getModelKey(), stats.avgLatency, stats.successRate, score);
+            log.debug("模型 {} 指标更新: 延迟中位数={}ms, 成功率={}%, 样本={}, 得分={}",
+                    model.getModelKey(), stats.avgLatency, stats.successRate, stats.sampleCount, score);
         }
         // 同步更新提供者的汇总指标（基于模型统计数据）
         syncProviderMetricsFromModelStats(activeModels, modelStatsMap);
@@ -345,16 +353,13 @@ public class HealthCheckServiceImpl implements HealthCheckService {
             List<RequestLog> list = entry.getValue();
             long total = list.size();
             long success = list.stream().filter(l -> "success".equals(l.getStatus())).count();
-            double avgLatency = list.stream()
-                    .filter(l -> l.getDuration() != null)
-                    .mapToInt(RequestLog::getDuration)
-                    .average()
-                    .orElse(0);
 
             ModelStats stats = new ModelStats();
             stats.modelId = modelId;
-            stats.avgLatency = (int) Math.round(avgLatency);
+            // 中位数而非均值：一个 1352s 的极值能把 16 个样本的均值拉高 60 倍（§3.4）
+            stats.avgLatency = LatencyAggregator.medianLatency(list);
             stats.successRate = BigDecimal.valueOf(success * 100.0 / total).setScale(2, RoundingMode.HALF_UP);
+            stats.sampleCount = (int) total;
             result.add(stats);
         }
         return result;
@@ -414,7 +419,7 @@ public class HealthCheckServiceImpl implements HealthCheckService {
         Map<Long, List<ModelStats>> byProvider = new HashMap<>();
         for (Model model : models) {
             ModelStats stats = statsMap.get(model.getId());
-            if (stats == null || model.getProviderId() == null) {
+            if (stats == null || model.getProviderId() == null || stats.sampleCount < minSamples) {
                 continue;
             }
             byProvider.computeIfAbsent(model.getProviderId(), k -> new ArrayList<>()).add(stats);
@@ -427,9 +432,24 @@ public class HealthCheckServiceImpl implements HealthCheckService {
                     .map(s -> s.successRate)
                     .reduce(BigDecimal.ZERO, BigDecimal::add)
                     .divide(BigDecimal.valueOf(list.size()), 2, RoundingMode.HALF_UP);
-            String healthStatus = determineHealthStatus(avgSuccessRate);
+            // 与模型侧同源：探测失败优先按分类判定，不能被 request_log 的成功率盖过去。
+            // 否则一个 Key 失效的 provider 会因为在窗口内「没有失败日志」而算出 100% → 被判 healthy
+            String healthStatus = resolveProviderHealthStatus(entry.getKey(), avgSuccessRate);
             modelProviderService.updateHealthStatus(entry.getKey(), healthStatus, avgLatency, avgSuccessRate);
         }
+    }
+
+    /**
+     * provider 汇总健康状态：探测结论优先（与模型侧同源），探测给不出意见时才看聚合成功率。
+     */
+    private String resolveProviderHealthStatus(Long providerId, BigDecimal avgSuccessRate) {
+        ProbeResult probe = probeWindowStore.latest(providerId);
+        if (probe != null && !probe.isSuccess()) {
+            return probe.failureKind().shouldExcludeFromRouting()
+                    ? HealthStatusEnum.UNHEALTHY.getValue()
+                    : HealthStatusEnum.DEGRADED.getValue();
+        }
+        return determineHealthStatus(avgSuccessRate);
     }
 
     /**
@@ -451,7 +471,7 @@ public class HealthCheckServiceImpl implements HealthCheckService {
      *
      * @param successRate 24h 窗口成功率；窗口内没有日志时传 null
      */
-    private String resolveHealthStatus(Long providerId, BigDecimal successRate) {
+    private String resolveHealthStatus(Long providerId, BigDecimal successRate, int sampleCount) {
         ProbeResult probe = probeWindowStore.latest(providerId);
         if (probe != null && !probe.isSuccess()) {
             return probe.failureKind().shouldExcludeFromRouting()
@@ -460,6 +480,9 @@ public class HealthCheckServiceImpl implements HealthCheckService {
         }
         if (probe == null || successRate == null) {
             // 「没测过」既不能当满分，也不能据此把模型排除出候选池
+            return HealthStatusEnum.UNKNOWN.getValue();
+        }
+        if (sampleCount < minSamples) {
             return HealthStatusEnum.UNKNOWN.getValue();
         }
         // 可达且成功率 >= 50% 才是 healthy，否则是 degraded
@@ -528,6 +551,8 @@ public class HealthCheckServiceImpl implements HealthCheckService {
         Long modelId;
         int avgLatency = 0;
         BigDecimal successRate;
+        /** 该成功率的样本数，用于样本量下限判断 */
+        int sampleCount = 0;
     }
 
     /**

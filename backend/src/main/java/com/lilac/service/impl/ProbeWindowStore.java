@@ -75,6 +75,13 @@ public class ProbeWindowStore {
     }
 
     /**
+     * 窗口内的样本数，用于判断这次的成功率够不够可信
+     */
+    int sampleSize(Long providerId) {
+        return windowEntries(providerId).size();
+    }
+
+    /**
      * 最近一次探测结果；窗口内没有记录返回 null
      */
     ProbeResult latest(Long providerId) {
