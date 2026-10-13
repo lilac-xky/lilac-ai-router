@@ -20,6 +20,10 @@ import org.springframework.stereotype.Component;
  *       导致依赖这些字段的用例时红时绿；</li>
  *   <li>该任务会对所有 provider 发真实请求，测试期间会持续产生 token 费用。</li>
  * </ol>
+ *
+ * <p>频率：{@code lilac.health-check.interval-ms}（默认 30000）。原先硬编码 30 秒，
+ * 而每次 tick 都会对所有 provider 发真 probe —— 上游一多就是持续开销，
+ * 探针间隔必须是能按厂商数量与预算调的旋钮，而不是改代码。
  */
 @Component
 @Slf4j
@@ -30,9 +34,9 @@ public class HealthCheckTask {
     private HealthCheckService healthCheckService;
     
     /**
-     * 每 30 秒执行一次健康检查
+     * 按配置的间隔执行健康检查
      */
-    @Scheduled(fixedRate = 30000)
+    @Scheduled(fixedRateString = "${lilac.health-check.interval-ms:30000}")
     public void executeHealthCheck() {
         log.info("=== 开始执行健康检查 ===");
         healthCheckService.checkAllProviders();
