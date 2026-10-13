@@ -470,8 +470,9 @@ public class HealthCheckServiceImpl implements HealthCheckService {
      * 模型健康状态：探测是硬门槛，只有探测通过时 request_log 成功率才决定 healthy 还是 degraded。
      *
      * @param successRate 24h 窗口成功率；窗口内没有日志时传 null
+     * @param sampleCount 该成功率的样本数；小于 {@link #minSamples} 时不据它判状态
      */
-    private String resolveHealthStatus(Long providerId, BigDecimal successRate, int sampleCount) {
+    String resolveHealthStatus(Long providerId, BigDecimal successRate, int sampleCount) {
         ProbeResult probe = probeWindowStore.latest(providerId);
         if (probe != null && !probe.isSuccess()) {
             return probe.failureKind().shouldExcludeFromRouting()
