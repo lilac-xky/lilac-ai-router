@@ -101,11 +101,15 @@ public class ChatServiceImpl implements ChatService {
         String strategyType = determineStrategyType(chatRequest.getRoutingStrategy(), requestedModel);
         // 选择主模型
         Model selectedModel = routingService.selectModel(strategyType, MODEL_TYPE_CHAT, requestedModel);
-        if (selectedModel == null) {
-            throw new BusinessException(HttpsCodeEnum.NO_AVAILABLE_MODEL, "没有可用的模型");
-        }
         // 获取 Fallback 模型列表
         List<Model> fallbackModels = routingService.getFallbackModels(strategyType, MODEL_TYPE_CHAT, requestedModel);
+        if (selectedModel == null && isEmpty(fallbackModels)) {
+            throw new BusinessException(HttpsCodeEnum.NO_AVAILABLE_MODEL, "没有可用的模型");
+        }
+        // 指定模型不可用（不存在 / 已停用）时不直接报错，交给下面的 Fallback 逻辑试备选
+        if (selectedModel == null) {
+            log.warn("请求的模型 {} 不可用（不存在或已停用），改用备选模型降级", requestedModel);
+        }
         // 带 Fallback 的调用
         return invokeWithFallback(selectedModel, fallbackModels, chatRequest, userId, apiKeyId, startTime);
     }
@@ -128,28 +132,36 @@ public class ChatServiceImpl implements ChatService {
         String requestedModel = chatRequest.getModel();
         String strategyType = determineStrategyType(chatRequest.getRoutingStrategy(), requestedModel);
         Model selectedModel = routingService.selectModel(strategyType, MODEL_TYPE_CHAT, requestedModel);
-        if (selectedModel == null) {
+        List<Model> fallbackModels = routingService.getFallbackModels(strategyType, MODEL_TYPE_CHAT, requestedModel);
+        if (selectedModel == null && isEmpty(fallbackModels)) {
             throw new BusinessException(HttpsCodeEnum.NO_AVAILABLE_MODEL, "没有可用的模型");
         }
-        List<Model> fallbackModels = routingService.getFallbackModels(strategyType, MODEL_TYPE_CHAT, requestedModel);
+        // 指定模型不可用时不直接报错，直接拿首个备选当流的主模型
+        Model primaryModel = selectedModel;
+        if (primaryModel == null) {
+            primaryModel = fallbackModels.get(0);
+            fallbackModels = fallbackModels.subList(1, fallbackModels.size());
+            log.warn("请求的模型 {} 不可用（不存在或已停用），流式请求改用备选模型 {}", requestedModel, primaryModel.getModelKey());
+        }
 
         // 主模型流式调用，失败时回退到首个备选模型
-        Flux<StreamResponse> stream = streamWithModel(selectedModel, chatRequest, userId, apiKeyId, startTime);
-        if (fallbackModels != null && !fallbackModels.isEmpty()) {
+        final Model streamPrimary = primaryModel;
+        Flux<StreamResponse> stream = streamWithModel(streamPrimary, chatRequest, userId, apiKeyId, startTime);
+        if (!isEmpty(fallbackModels)) {
             Model fallbackModel = fallbackModels.get(0);
             stream = stream.onErrorResume(e -> {
                 if (e instanceof CallRejectedException) {
                     // 账户资源不足，换备选模型同样会被拒，不降级
                     return Flux.error(e);
                 }
-                log.warn("模型 {} 流式调用失败，回退到备选模型 {}", selectedModel.getModelKey(), fallbackModel.getModelKey(), e);
+                log.warn("模型 {} 流式调用失败，回退到备选模型 {}", streamPrimary.getModelKey(), fallbackModel.getModelKey(), e);
                 return streamWithModel(fallbackModel, chatRequest, userId, apiKeyId, startTime);
             });
         } else {
             // 无备选：只在主模型真的失败时补一行日志，否则和「降级成功」在客户端看起来一样
             stream = stream.onErrorResume(e -> {
                 if (!(e instanceof CallRejectedException)) {
-                    log.error("模型 {} 流式调用失败，且没有可用的备选模型（本次降级机会为 0）", selectedModel.getModelKey(), e);
+                    log.error("模型 {} 流式调用失败，且没有可用的备选模型（本次降级机会为 0）", streamPrimary.getModelKey(), e);
                 }
                 return Flux.error(e);
             });
@@ -162,33 +174,50 @@ public class ChatServiceImpl implements ChatService {
      */
     private ChatResponse invokeWithFallback(Model primaryModel, List<Model> fallbackModels,
                                             ChatRequest chatRequest, Long userId, Long apiKeyId, long startTime) {
-        try {
-            return callModel(primaryModel, chatRequest, userId, apiKeyId, startTime);
-        } catch (CallRejectedException e) {
-            // 账户资源不足，不降级
-            throw e;
-        } catch (Exception e) {
-            log.warn("模型 {} 调用失败，尝试 Fallback", primaryModel.getModelKey(), e);
-            if (fallbackModels != null && !fallbackModels.isEmpty()) {
-                int retries = Math.min(fallbackModels.size(), MAX_FALLBACK_RETRIES);
-                for (int i = 0; i < retries; i++) {
-                    Model fallbackModel = fallbackModels.get(i);
-                    try {
-                        log.info("尝试 Fallback 模型: {}", fallbackModel.getModelKey());
-                        return callModel(fallbackModel, chatRequest, userId, apiKeyId, startTime);
-                    } catch (CallRejectedException rejected) {
-                        // 备选模型同样被闸门拒绝，再试没意义
-                        throw rejected;
-                    } catch (Exception fallbackException) {
-                        log.warn("Fallback 模型 {} 调用失败", fallbackModel.getModelKey(), fallbackException);
-                    }
-                }
-            } else {
-                // 没有备选可试：这行是「降级静默失效」的唯一线索，否则客户端只拿到 500，日志里看不出没降级过
-                log.error("模型 {} 调用失败，且没有可用的备选模型（本次降级机会为 0）", primaryModel.getModelKey(), e);
+        Exception lastFailure = null;
+        // 主选不可用（指定模型不存在/已停用）时没有「主选失败」这一步，直接进备选链
+        if (primaryModel != null) {
+            try {
+                return callModel(primaryModel, chatRequest, userId, apiKeyId, startTime);
+            } catch (CallRejectedException e) {
+                // 账户资源不足，不降级
+                throw e;
+            } catch (Exception e) {
+                log.warn("模型 {} 调用失败，尝试 Fallback", primaryModel.getModelKey(), e);
+                lastFailure = e;
             }
-            throw new BusinessException(HttpsCodeEnum.SYSTEM_ERROR, "调用模型失败: " + e.getMessage());
         }
+        return invokeFallbacks(fallbackModels, chatRequest, userId, apiKeyId, startTime, lastFailure);
+    }
+
+    /**
+     * 依次尝试备选模型。全部失败时抛最后一次的失败原因 —— 原先无论失败原因是什么都压成
+     * 「调用模型失败」，熔断器快速失败的信息（上游一次都没调）会被丢掉
+     */
+    private ChatResponse invokeFallbacks(List<Model> fallbackModels, ChatRequest chatRequest,
+                                         Long userId, Long apiKeyId, long startTime, Exception lastFailure) {
+        int retries = fallbackModels == null ? 0 : Math.min(fallbackModels.size(), MAX_FALLBACK_RETRIES);
+        for (int i = 0; i < retries; i++) {
+            Model fallbackModel = fallbackModels.get(i);
+            try {
+                log.info("尝试 Fallback 模型: {}", fallbackModel.getModelKey());
+                return callModel(fallbackModel, chatRequest, userId, apiKeyId, startTime);
+            } catch (CallRejectedException rejected) {
+                // 备选模型同样被闸门拒绝，再试没意义
+                throw rejected;
+            } catch (Exception fallbackException) {
+                log.warn("Fallback 模型 {} 调用失败", fallbackModel.getModelKey(), fallbackException);
+                lastFailure = fallbackException;
+            }
+        }
+        if (retries == 0) {
+            // 没有备选可试：这行是「降级静默失效」的唯一线索，否则客户端只拿到 500，日志里看不出没降级过
+            log.error("没有可用的备选模型（本次降级机会为 0），主选失败原因：{}", lastFailure == null ? "无" : lastFailure.getMessage());
+        }
+        if (lastFailure == null) {
+            throw new BusinessException(HttpsCodeEnum.NO_AVAILABLE_MODEL, "没有可用的模型");
+        }
+        throw new BusinessException(HttpsCodeEnum.SYSTEM_ERROR, "调用模型失败: " + lastFailure.getMessage());
     }
 
     /**
@@ -532,6 +561,10 @@ public class ChatServiceImpl implements ChatService {
     }
 
     private record ProviderContext(ModelProvider provider, boolean byok) {
+    }
+
+    private static boolean isEmpty(List<Model> models) {
+        return models == null || models.isEmpty();
     }
 
     /**

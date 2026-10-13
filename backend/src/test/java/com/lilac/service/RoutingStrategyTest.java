@@ -382,46 +382,89 @@ public class RoutingStrategyTest extends IntegrationTestSupport {
     }
 
     @Test
-    @DisplayName("FIXED · 指定了已停用 / 不健康的模型时必须返回 null，而不是忽略状态照给")
-    void fixed_returnsNullWhenModelInactive() {
+    @DisplayName("FIXED · unhealthy 的模型仍会被交给调用方尝试（健康状态交给熔断器按真实结果判定）")
+    void fixed_returnsUnhealthyModelSoCircuitBreakerCanDecide() {
         RoutingStrategyInterface strategy = factory.getStrategy(FIXED);
 
-        Model viaInactive = strategy.selectModel(modelType, negInactive.getModelKey());
         Model viaUnhealthy = strategy.selectModel(modelType, negUnhealthy.getModelKey());
-        log.info("[FIXED·非法目标·{}] 指定 {} → {} | 指定 {} → {}",
-                runId, brief(negInactive), brief(viaInactive), brief(negUnhealthy), brief(viaUnhealthy));
+        Model viaInactive = strategy.selectModel(modelType, negInactive.getModelKey());
+        log.info("[FIXED·状态·{}] 指定 unhealthy={} | 指定 inactive={}", runId, brief(viaUnhealthy), brief(viaInactive));
 
-        assertThat(viaInactive)
-                .as("status=inactive 的模型即使 modelKey 对上了也不能给").isNull();
+        // 任务 J 改的就是这条：健康状态是 30s tick 的快照，可能已经过期。
+        // 用它直接判死会让「主选 + 备选」一起消失（备选原来共用同一个 healthStatus 过滤），
+        // 一个备选都不试就返回 400007。现在改由熔断器按真实调用结果快速失败。
         assertThat(viaUnhealthy)
-                .as("healthStatus=unhealthy 的模型即使 modelKey 对上了也不能给").isNull();
+                .as("unhealthy 只是状态快照，不该在路由层直接判死").isNotNull();
+        assertThat(viaUnhealthy.getModelKey()).isEqualTo(negUnhealthy.getModelKey());
+        assertThat(viaInactive)
+                .as("status=inactive 是显式停用，路由层必须继续挡住").isNull();
+    }
+
+    @Test
+    @DisplayName("FIXED · 主选不可用时备选必须还在（任务 J：这就是「降级静默失效」的根因）")
+    void fixed_fallbackSurvivesUnavailablePrimary() {
+        RoutingStrategyInterface strategy = factory.getStrategy(FIXED);
+
+        // 指定一个 unhealthy 的模型：改动前主选返回 null，而备选又被同一个 healthStatus 过滤清空，
+        // 于是 ChatServiceImpl 直接 400007，一个备选都不试
+        Model selected = strategy.selectModel(modelType, negUnhealthy.getModelKey());
+        List<String> fallbackKeys = strategy.getFallbackModels(modelType, negUnhealthy.getModelKey()).stream()
+                .map(Model::getModelKey).toList();
+        log.info("[FIXED·主选不可用·{}] 指定 {} → 主选={} | fallback={}",
+                runId, brief(negUnhealthy), brief(selected), brief(fallbackKeys));
+
+        assertThat(fallbackKeys)
+                .as("主选不可用时备选全部消失 = 结构上必然降级失败，正是任务 J 要修的东西")
+                .isNotEmpty()
+                .doesNotContain(negUnhealthy.getModelKey())
+                .doesNotContain(negInactive.getModelKey())
+                .contains(fastPricey.getModelKey(), mid.getModelKey(), cheap.getModelKey(), untested.getModelKey());
+    }
+
+    @Test
+    @DisplayName("FIXED · 全部候选都不可用时仍然返回它们兜底，绝不返回空列表")
+    void fixed_fallbackNeverEmptyWhenCandidatesExist() {
+        // 单独一个 modelType，把候选全造成 unhealthy，模拟「整批模型都被判不健康」
+        String doomedType = modelType + "-doomed";
+        Model doomedHealthy = insert("doomed-healthy", doomedType, "active", "unhealthy", "10", "0.01", "0.01", 100, 9);
+        Model doomedUnknown = insert("doomed-unknown", doomedType, "active", "unhealthy", "20", "0.01", "0.01", 200, 8);
+
+        RoutingStrategyInterface strategy = factory.getStrategy(FIXED);
+        List<String> fallbackKeys = strategy.getFallbackModels(doomedType, "not-exists-model").stream()
+                .map(Model::getModelKey).toList();
+        log.info("[FIXED·全灭·{}] fallback={}（候选全 unhealthy）", runId, brief(fallbackKeys));
+
+        // 返回空列表的后果是 ChatServiceImpl 一个备选都不试就 400007；
+        // 状态可疑的模型好歹是一次真实的尝试机会，熔断器会替我们快速收敛
+        assertThat(fallbackKeys)
+                .as("候选存在时 fallback 不许为空，否则又是「降级静默失效」")
+                .containsExactly(doomedHealthy.getModelKey(), doomedUnknown.getModelKey());
     }
 
     // ------------------------------------------------------------------ 已知缺陷（断言的是当前行为，不是期望语义）
 
     @Test
-    @DisplayName("FIXED · 已知缺陷：requestedModel 为空时 getFallbackModels 会白丢优先级最高的模型")
-    void fixed_fallbackWithBlankRequestedModel_documentsWart() {
+    @DisplayName("FIXED · requestedModel 为空时 getFallbackModels 返回全量候选（原先会白丢优先级最高的模型）")
+    void fixed_fallbackWithBlankRequestedModel_returnsAllCandidates() {
         RoutingStrategyInterface strategy = factory.getStrategy(FIXED);
 
         Model selected = strategy.selectModel(modelType, null);
         List<String> fallbackKeys = strategy.getFallbackModels(modelType, null).stream()
                 .map(Model::getModelKey).toList();
-        log.info("[FIXED·缺陷·{}] 主选={} | fallback={} ← 候选共 {} 个，{} 被凭空丢掉",
-                runId, brief(selected), brief(fallbackKeys), AVAILABLE, brief(fastPricey));
+        log.info("[FIXED·空key·{}] 主选={} | fallback={} ← 候选共 {} 个",
+                runId, brief(selected), brief(fallbackKeys), AVAILABLE);
 
         assertThat(selected)
-                .as("前置：requestedModel 为空时 selectModel 返回 null，也就是「没有第一个被选中」")
-                .isNull();
+                .as("requestedModel 为空时 FIXED 不猜模型，仍然返回 null").isNull();
 
-        // ⚠️ 下面断言的是【当前实现的行为】，不是期望语义。
-        // FixedRoutingStrategy.getFallbackModels 里那句 skip(1) 的前提是"selectModel 已经拿走了第一个"，
-        // 但上一行刚刚证明这个前提不成立 → priority 最高的 fast-pricey 被凭空丢掉。
-        // 该修的是实现：requestedModel 为空时应走"全量候选"分支，而不是 skip(1)。
+        // 原先这里走的是 skip(1) 分支，前提是「selectModel 已经拿走了第一个」，而上一行刚刚证明
+        // 这个前提不成立 → priority 最高的 fast-pricey 被凭空丢掉。现在改为按 requestedModel 排除，
+        // 空值时就是全量候选，不再依赖「谁被选走了」这个隐含状态。
         assertThat(fallbackKeys)
-                .as("候选明明有 %d 个，却因为 skip(1) 只返回 %d 个", AVAILABLE, AVAILABLE - 1)
-                .hasSize(AVAILABLE - 1)
-                .doesNotContain(fastPricey.getModelKey());
+                .as("空 requestedModel 下应返回优先级排序后的全量候选，一个都不能少")
+                .hasSize(AVAILABLE)
+                .contains(fastPricey.getModelKey())
+                .startsWith(fastPricey.getModelKey());
     }
 
     @Test
