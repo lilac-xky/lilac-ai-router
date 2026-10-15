@@ -95,6 +95,13 @@ public class HealthCheckServiceImpl implements HealthCheckService {
     private int minSamples = 5;
 
     /**
+     * 指标 EMA 平滑系数：新样本占的权重。1.0 = 不平滑（退回改造前行为），0.3 = 新样本占三成。
+     * 调小更稳但更迟钝；调大更灵敏但更容易被单次波动带偏。
+     */
+    @Value("${lilac.health-check.ema-alpha:0.3}")
+    private double emaAlpha = 0.3;
+
+    /**
      * 检查所有提供者的健康状态
      */
     @Override
@@ -293,6 +300,8 @@ public class HealthCheckServiceImpl implements HealthCheckService {
         // 转换为 Map 便于查找
         Map<Long, ModelStats> modelStatsMap = modelStatsList.stream()
                 .collect(Collectors.toMap(s -> s.modelId, s -> s, (a, b) -> a));
+        // 对指标进行平滑处理
+        smoothMetricsInPlace(activeModels, modelStatsMap);
         // 计算归一化参数（用于综合得分计算）
         NormalizationParams normParams = calculateNormalizationParams(activeModels, modelStatsMap);
 
@@ -315,11 +324,12 @@ public class HealthCheckServiceImpl implements HealthCheckService {
             // 计算综合得分
             BigDecimal score = calculateScore(model, stats, normParams);
             // 根据成功率确定健康状态
-            String healthStatus = resolveHealthStatus(model.getProviderId(), stats.successRate, stats.sampleCount);
+            String healthStatus = resolveHealthStatus(model.getProviderId(), stats.rawSuccessRate, stats.sampleCount);
             // 更新模型指标
             modelService.updateModelMetrics(model.getId(), healthStatus, stats.avgLatency, stats.successRate, score);
-            log.debug("模型 {} 指标更新: 延迟中位数={}ms, 成功率={}%, 样本={}, 得分={}",
-                    model.getModelKey(), stats.avgLatency, stats.successRate, stats.sampleCount, score);
+            log.debug("模型 {} 指标更新: 延迟={}ms（本轮原始 {}）, 成功率={}%（本轮原始 {}）, 样本={}, 得分={}",
+                    model.getModelKey(), stats.avgLatency, stats.rawAvgLatency,
+                    stats.successRate, stats.rawSuccessRate, stats.sampleCount, score);
         }
         // 同步更新提供者的汇总指标（基于模型统计数据）
         syncProviderMetricsFromModelStats(activeModels, modelStatsMap);
@@ -361,6 +371,9 @@ public class HealthCheckServiceImpl implements HealthCheckService {
             // 中位数而非均值：一个 1352s 的极值能把 16 个样本的均值拉高 60 倍（§3.4）
             stats.avgLatency = LatencyAggregator.medianLatency(list);
             stats.successRate = BigDecimal.valueOf(success * 100.0 / total).setScale(2, RoundingMode.HALF_UP);
+            // 原始值同时留一份给健康判定：判死不能吃平滑值，否则「刚坏掉」会被拖慢好几轮
+            stats.rawAvgLatency = stats.avgLatency;
+            stats.rawSuccessRate = stats.successRate;
             stats.sampleCount = (int) total;
             result.add(stats);
         }
@@ -493,6 +506,28 @@ public class HealthCheckServiceImpl implements HealthCheckService {
     }
 
     /**
+     * 对窗口统计做 EMA 平滑（就地把平滑值写回 stats，原始值留在 rawXxx 字段）。
+     */
+    private void smoothMetricsInPlace(List<Model> activeModels, Map<Long, ModelStats> modelStatsMap) {
+        for (Model model : activeModels) {
+            ModelStats stats = modelStatsMap.get(model.getId());
+            if (stats == null || stats.sampleCount < minSamples) {
+                continue;
+            }
+            int previousLatency = model.getAvgLatency() != null ? model.getAvgLatency() : 0;
+            boolean coldStart = previousLatency <= 0;
+
+            stats.avgLatency = EmaSmoother.smoothLatency(previousLatency, stats.rawAvgLatency, emaAlpha);
+            stats.successRate = EmaSmoother.smoothSuccessRate(
+                    model.getSuccessRate(), stats.rawSuccessRate, emaAlpha, coldStart);
+
+            log.debug("模型 {} EMA 平滑：延迟 {} → {}（本轮 {}），成功率 {} → {}（本轮 {}），α={}",
+                    model.getModelKey(), previousLatency, stats.avgLatency, stats.rawAvgLatency,
+                    model.getSuccessRate(), stats.successRate, stats.rawSuccessRate, emaAlpha);
+        }
+    }
+
+    /**
      * 计算模型的综合得分（越低越好）。
      * 维度与权重已抽到 {@link com.lilac.scoring.CompositeScorer}，权重可配。
      */
@@ -510,8 +545,14 @@ public class HealthCheckServiceImpl implements HealthCheckService {
      */
     static class ModelStats {
         Long modelId;
+        /** 平滑后的延迟，用于算 score（排序） */
         int avgLatency = 0;
+        /** 平滑后的成功率，用于算 score（排序） */
         BigDecimal successRate;
+        /** 本轮窗口的原始延迟中位数，用于健康判定（判死不能平滑，否则会拖慢故障发现） */
+        int rawAvgLatency = 0;
+        /** 本轮窗口的原始成功率，用于健康判定 */
+        BigDecimal rawSuccessRate;
         /** 该成功率的样本数，用于样本量下限判断 */
         int sampleCount = 0;
     }

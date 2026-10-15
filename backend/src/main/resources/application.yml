@@ -46,8 +46,10 @@ management:
       export:
         enabled: true
 
-# 路由评分权重
+# 拓扑优化相关配置
 lilac:
+  health-check:
+    ema-alpha: 0.3
   routing:
     scoring:
       weights:
