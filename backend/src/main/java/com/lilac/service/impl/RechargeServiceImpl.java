@@ -85,8 +85,8 @@ public class RechargeServiceImpl extends ServiceImpl<RechargeRecordMapper, Recha
     @Override
     public Page<RechargeRecord> listUserRechargeRecords(Long userId, int pageNum, int pageSize) {
         QueryWrapper query = QueryWrapper.create()
-                .where("userId = " + userId)
-                .orderBy("createTime DESC");
+                .eq("userId", userId)
+                .orderBy("createTime", false);
         return page(Page.of(pageNum, pageSize), query);
     }
 
@@ -101,8 +101,8 @@ public class RechargeServiceImpl extends ServiceImpl<RechargeRecordMapper, Recha
             return BigDecimal.ZERO;
         }
         QueryWrapper query = QueryWrapper.create()
-                .where("userId = " + userId)
-                .and("status = 'success'");
+                .eq("userId", userId)
+                .eq("status", "success");
         List<RechargeRecord> records = list(query);
         BigDecimal total = BigDecimal.ZERO;
         for (RechargeRecord record : records) {

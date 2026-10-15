@@ -14,7 +14,6 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
-import java.time.LocalTime;
 import java.util.List;
 
 /**
@@ -74,8 +73,8 @@ public class BillingServiceImpl implements BillingService {
         }
         List<RequestLog> logs = requestLogMapper.selectListByQuery(
                 QueryWrapper.create()
-                        .where("userId = " + userId)
-                        .and("status = 'success'")
+                        .eq("userId", userId)
+                        .eq("status", "success")
         );
         BigDecimal totalCost = BigDecimal.ZERO;
         for (RequestLog log : logs) {
@@ -112,14 +111,12 @@ public class BillingServiceImpl implements BillingService {
         if (userId == null) {
             return BigDecimal.ZERO;
         }
-        LocalDateTime todayStart = LocalDateTime.of(LocalDate.now(), LocalTime.MIN);
-        LocalDateTime todayEnd = LocalDateTime.of(LocalDate.now(), LocalTime.MAX);
+        LocalDateTime todayStart = LocalDate.now().atStartOfDay();
         List<RequestLog> logs = requestLogMapper.selectListByQuery(
                 QueryWrapper.create()
-                        .where("userId = " + userId)
-                        .and("status = 'success'")
-                        .and("createTime >= '" + todayStart + "'")
-                        .and("createTime <= '" + todayEnd + "'")
+                        .eq("userId", userId)
+                        .eq("status", "success")
+                        .lt("createTime", todayStart.plusDays(1))
         );
         BigDecimal totalCost = BigDecimal.ZERO;
         for (RequestLog log : logs) {

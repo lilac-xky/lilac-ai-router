@@ -30,8 +30,8 @@ public class BillingRecordServiceImpl extends ServiceImpl<BillingRecordMapper, B
     @Override
     public Page<BillingRecord> listUserBillingRecords(Long userId, int pageNum, int pageSize) {
         QueryWrapper query = QueryWrapper.create()
-                .where("userId = " + userId)
-                .orderBy("createTime DESC");
+                .eq("userId", userId)
+                .orderBy("createTime", false);
         return page(Page.of(pageNum, pageSize), query);
     }
 
@@ -69,8 +69,8 @@ public class BillingRecordServiceImpl extends ServiceImpl<BillingRecordMapper, B
             return BigDecimal.ZERO;
         }
         QueryWrapper query = QueryWrapper.create()
-                .where("userId = " + userId)
-                .and("billingType = '" + billingType + "'");
+                .eq("userId", userId)
+                .eq("billingType", billingType);
         List<BillingRecord> records = list(query);
         BigDecimal total = BigDecimal.ZERO;
         for (BillingRecord record : records) {

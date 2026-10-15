@@ -16,7 +16,6 @@ import org.springframework.stereotype.Service;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
-import java.time.LocalTime;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -166,13 +165,12 @@ public class RequestLogServiceImpl implements RequestLogService {
         List<Map<String, Object>> result = new ArrayList<>();
         LocalDate currentDate = startDate;
         while (!currentDate.isAfter(endDate)) {
-            LocalDateTime dayStart = LocalDateTime.of(currentDate, LocalTime.MIN);
-            LocalDateTime dayEnd = LocalDateTime.of(currentDate, LocalTime.MAX);
+            LocalDateTime dayStart = currentDate.atStartOfDay();
             List<RequestLog> logs = requestLogMapper.selectListByQuery(
                     QueryWrapper.create()
-                            .where("userId = " + userId)
-                            .and("createTime >= '" + dayStart + "'")
-                            .and("createTime <= '" + dayEnd + "'")
+                            .eq("userId", userId)
+                            .ge("createTime", dayStart)
+                            .lt("createTime", dayStart.plusDays(1))
             );
             long totalTokens = 0;
             long requestCount = 0;
@@ -233,12 +231,12 @@ public class RequestLogServiceImpl implements RequestLogService {
         }
         // 日期范围
         if (StrUtil.isNotBlank(queryRequest.getStartDate())) {
-            LocalDateTime startTime = LocalDateTime.of(LocalDate.parse(queryRequest.getStartDate()), LocalTime.MIN);
+            LocalDateTime startTime = LocalDate.parse(queryRequest.getStartDate()).atStartOfDay();
             queryWrapper.ge("createTime", startTime);
         }
         if (StrUtil.isNotBlank(queryRequest.getEndDate())) {
-            LocalDateTime endTime = LocalDateTime.of(LocalDate.parse(queryRequest.getEndDate()), LocalTime.MAX);
-            queryWrapper.le("createTime", endTime);
+            LocalDateTime endTime = LocalDate.parse(queryRequest.getEndDate()).plusDays(1).atStartOfDay();
+            queryWrapper.lt("createTime", endTime);
         }
         // 按创建时间倒序
         queryWrapper.orderBy("createTime", false);
