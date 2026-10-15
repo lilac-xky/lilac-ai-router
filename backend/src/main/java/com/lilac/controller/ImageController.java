@@ -2,6 +2,7 @@ package com.lilac.controller;
 
 import cn.hutool.core.util.StrUtil;
 import com.lilac.annotation.AuthCheck;
+import com.lilac.annotation.RateLimit;
 import com.lilac.constant.UserConstant;
 import com.lilac.domain.dto.image.ImageGenerationRequest;
 import com.lilac.domain.dto.image.ImageGenerationResponse;
@@ -39,6 +40,7 @@ public class ImageController {
      * 生成图片（OpenAI 兼容接口）
      */
     @PostMapping("/generations")
+    @RateLimit(type = RateLimit.LimitType.API_KEY, limit = 10)
     public ImageGenerationResponse generateImage(@RequestBody ImageGenerationRequest request,
                                                  @RequestHeader(value = "Authorization", required = false) String authorization,
                                                  HttpServletRequest httpRequest) {

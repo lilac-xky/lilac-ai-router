@@ -24,7 +24,7 @@ public class BlacklistController {
      * 获取黑名单列表
      */
     @GetMapping("/list")
-    @AuthCheck(mustRole = UserConstant.USER)
+    @AuthCheck(mustRole = UserConstant.ADMIN)
     public Result<Set<String>> getBlacklist() {
         Set<String> blacklist = blacklistService.getAllBlacklist();
         return Result.success(blacklist);
