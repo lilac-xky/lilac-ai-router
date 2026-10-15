@@ -602,6 +602,12 @@ declare namespace API {
     apiKeyId?: number
     /** 使用的模型名称 */
     modelName?: string
+    /** 请求模型标识（调用历史按此字段模糊查询） */
+    requestModel?: string
+    /** 请求类型：chat/image */
+    requestType?: string
+    /** 调用来源：api/web */
+    source?: string
     /** 输入Token数 */
     promptTokens?: number
     /** 输出Token数 */

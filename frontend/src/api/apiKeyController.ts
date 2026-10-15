@@ -44,6 +44,18 @@ export async function revokeApiKey(body: API.DeleteRequest, options?: { [key: st
   })
 }
 
+/** 轮换 API Key：换一把新 Key，旧 Key 立即失效。 明文不可逆，用户丢了 Key 只能换，不能查回 —— 这是哈希存储的配套能力 POST /api/api/key/rotate */
+export async function rotateApiKey(body: API.DeleteRequest, options?: { [key: string]: any }) {
+  return request<API.ResultApiKeyVO>('/api/api/key/rotate', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    data: body,
+    ...(options || {}),
+  })
+}
+
 /** 获取 Token 消耗数 传 apiKeyId 时返回该 API Key 的消耗数；不传时返回当前用户所有 API Key 的累计消耗数 GET /api/api/key/token/stats */
 export async function getMyTokenStats(
   // 叠加生成的Param类型 (非body参数swagger默认没有生成对象)

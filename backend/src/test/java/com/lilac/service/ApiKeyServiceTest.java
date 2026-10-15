@@ -6,6 +6,7 @@ import com.lilac.enums.HttpsCodeEnum;
 import com.lilac.exception.BusinessException;
 import com.lilac.mapper.ApiKeyMapper;
 import com.lilac.support.IntegrationTestSupport;
+import com.lilac.utils.ApiKeyHasher;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.junit.jupiter.api.AfterEach;
@@ -28,6 +29,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * API Key 服务测试：创建 / 列表 / 撤销 / 按 Key 值查找 / 用量累加。
@@ -49,11 +51,12 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * <h3>★ 五个必须知道的表结构事实（全部实测得出，不是读 DDL 猜的）</h3>
  * <ol>
- *   <li><b>{@code keyValue} 上没有唯一索引</b> —— 全表只有 {@code PRIMARY KEY (id)}。
- *       所以「Key 不重复」完全靠 UUID 的随机性，数据库层没有任何兜底。
- *       实测：塞两行同 {@code keyValue} 能成功，且 {@code getByKeyValue} <b>不报错、静默返回其中一条</b>
- *       ⇒ 真撞了的话「用哪个 Key 认证」取决于读取顺序，且没有异常可查。
- *       见 {@link #duplicateKeyValue_isAllowedAndResolvedSilently_documentsWart()}。</li>
+ *   <li><b>{@code keyHash} 上有唯一索引 {@code uk_keyHash}（V1002 新增）</b> ——
+ *       而 V1002 之前 {@code keyValue} 上<b>没有任何唯一索引</b>，全表只有 {@code PRIMARY KEY (id)}，
+ *       「Key 不重复」完全靠 UUID 的随机性。当时的实测：塞两行同 {@code keyValue} 能成功，
+ *       且 {@code getByKeyValue} <b>不报错、静默返回其中一条</b> ⇒ 「A 拿自己的 Key 被认证成 B」。
+ *       <b>已修</b>：改成哈希存储 + 唯一索引，回归见
+ *       {@link #duplicateKeyHash_isRejectedByUniqueIndex()}。</li>
  *   <li><b>{@code totalTokens} 是 {@code int NULL DEFAULT NULL}</b> —— 可为空。
  *       ⚠️ 这一条曾经是真缺陷：{@code apiKey.getTotalTokens() + tokens} 会自动拆箱，
  *       遇到 {@code NULL} 直接 NPE，一次对话请求就 500。
@@ -107,8 +110,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  *       {@link #updateUsageStats_accumulatesFromNullTokens()}。</li>
  * </ol>
  * 两者与 W6「扣费原子性」同一根因：<b>用「读整行再写回整行」实现计数，必然丢更新</b>。
- * 剩余 B 组用例（{@code keyValue} 无唯一索引、明文存储、{@code lastUsedTime}、{@code keyName}
- * 纯空格）属 DDL 与安全语义，归属 W8，见 {@code docs/issue-ApiKey与密钥管理.md}。
+ * 原 B 组里两条 DDL / 安全语义的用例（{@code keyValue} 无唯一索引、明文存储）**已由 W8 的 V1002 修掉**，
+ * 转为期望语义用例 {@link #duplicateKeyHash_isRejectedByUniqueIndex()} /
+ * {@link #createApiKey_storesHashNotPlaintext()}。
+ * {@code lastUsedTime} 与 {@code keyName} 纯空格两条仍按当前行为钉住（见 issue 文档）。
  */
 @Slf4j
 public class ApiKeyServiceTest extends IntegrationTestSupport {
@@ -188,7 +193,12 @@ public class ApiKeyServiceTest extends IntegrationTestSupport {
         assertThat(created.getTotalTokens()).as("初始用量必须是 0 而不是 null").isZero();
 
         assertThat(fromDb).as("创建后必须能从库里查回来").isNotNull();
-        assertThat(fromDb.getKeyValue()).isEqualTo(created.getKeyValue());
+        // 库里不再有明文（V1002 已把 keyValue 置空，且实体上标了 @Column(ignore=true) 不参与读写），
+        // 所以这里改成断言「库里那行的哈希 == 返回明文的哈希」——这才是现在真正该成立的事
+        assertThat(fromDb.getKeyValue()).as("明文绝不落库").isNull();
+        assertThat(fromDb.getKeyHash())
+                .as("库里的哈希必须与创建时返回的明文对得上，否则用户拿到的 Key 当场就是废的")
+                .isEqualTo(ApiKeyHasher.sha256Hex(created.getKeyValue()));
         assertThat(fromDb.getIsDelete()).as("isDelete 必须是 0，否则刚建的 Key 自己就查不到").isZero();
     }
 
@@ -288,10 +298,11 @@ public class ApiKeyServiceTest extends IntegrationTestSupport {
     @Test
     @DisplayName("密钥失效 · getByKeyValue 查不到逻辑删除的行（但物理行还在）")
     void getByKeyValue_ignoresLogicDeleted() {
+        String plain = "sk-seed-" + runId + "-d1";
         ApiKey row = insert(newSeed("d1", testUserId, "active", 0L).build());
         apiKeyMapper.deleteById(row.getId());
 
-        ApiKey found = apiKeyService.getByKeyValue(row.getKeyValue());
+        ApiKey found = apiKeyService.getByKeyValue(plain);
         long physicalRows = countByKeyNamePattern(MARKER + runId + "-d1");
 
         log.info("[逻辑删除·{}] getByKeyValue={} | 库里物理行数={}（逻辑删除不删行，所以清理必须物理删）",
@@ -350,23 +361,34 @@ public class ApiKeyServiceTest extends IntegrationTestSupport {
     }
 
     @Test
-    @DisplayName("已知缺陷 · keyName 只拦 null 和空串，拦不住纯空格")
-    void createApiKey_acceptsWhitespaceOnlyName_documentsWart() {
+    @DisplayName("创建 · 纯空格名称被拒绝（✅ V1002 已修：原先 isEmpty() 拦不住空格）")
+    void createApiKey_rejectsWhitespaceOnlyName() {
         String blank = "   ";
-        ApiKey created = apiKeyService.createApiKey(blank, user(testUserId));
+        Integer blankCode = codeOf(() -> apiKeyService.createApiKey(blank, user(testUserId)));
+        Integer tabCode = codeOf(() -> apiKeyService.createApiKey("\t\n ", user(testUserId)));
+
+        log.info("[创建·空白名·{}] keyName=\"   \" → code={} | 制表换行混排 → code={}",
+                runId, blankCode, tabCode);
+
+        // ⚠️ 原实现是 `keyName == null || keyName.isEmpty()`，空串拦住了但纯空格能过，
+        //    于是列表里会出现看不见名字的 Key，用户无法辨认也无法指定删除哪个。
+        //    已改为 StrUtil.isBlank() 并在落库前 trim。
+        assertThat(blankCode).as("纯空格必须被拒").isEqualTo(HttpsCodeEnum.PARAMS_ERROR.getCode());
+        assertThat(tabCode).as("制表符/换行也算空白，必须一并拒绝").isEqualTo(HttpsCodeEnum.PARAMS_ERROR.getCode());
+    }
+
+    @Test
+    @DisplayName("创建 · 名称两端空白会被 trim 掉（避免「看不见的 Key 名」）")
+    void createApiKey_trimsName() {
+        // 名称合法但两端带空白：应保留内容、去掉空白
+        ApiKey created = apiKeyService.createApiKey("  " + MARKER + runId + "-trim  ", user(testUserId));
         String stored = apiKeyMapper.selectOneById(created.getId()).getKeyName();
 
-        log.info("[缺陷·keyName·{}] keyName=\"{}\" → 被接受，落库为 \"{}\"（长度 {}）",
-                runId, blank, stored, stored.length());
+        log.info("[创建·trim·{}] 落库的 keyName=\"{}\"（长度 {}）", runId, stored, stored.length());
 
-        // ⚠️ 断言的是【当前实现的行为】。校验条件是 `keyName == null || keyName.isEmpty()`，
-        // 空串被拦住了，但纯空格 / 制表符 / 全角空格都能过。
-        // 后果：列表里会出现一堆看不见名字的 Key，用户无法辨认、也无法删除指定哪个。
-        // 该修的：改成 `keyName == null || keyName.isBlank()`，并 trim 后落库。
-        // 修好后本用例应改为断言抛 PARAMS_ERROR。
-        assertThat(stored).as("纯空格被原样存入（缺陷，不是期望行为）").isEqualTo(blank);
-        assertThat(blank.isEmpty()).as("对照：isEmpty() 为 false，所以确实绕过了校验").isFalse();
-        assertThat(blank.isBlank()).as("对照：isBlank() 为 true —— 正确的校验应该用它").isTrue();
+        assertThat(stored)
+                .as("两端空白必须被去掉，否则列表里名字前后带看不见的空格")
+                .isEqualTo(MARKER + runId + "-trim");
     }
 
     @Test
@@ -396,32 +418,124 @@ public class ApiKeyServiceTest extends IntegrationTestSupport {
     }
 
     @Test
-    @DisplayName("已知缺陷 · keyValue 没有唯一索引，重复时静默取其中一条")
-    void duplicateKeyValue_isAllowedAndResolvedSilently_documentsWart() {
-        String dup = "sk-dup-" + runId;
-        ApiKey a = insert(newSeed("dup-a", testUserId, "active", 0L).keyValue(dup).build());
-        ApiKey b = insert(newSeed("dup-b", otherUserId, "active", 0L).keyValue(dup).build());
+    @DisplayName("密钥唯一 · 重复 keyHash 被唯一索引挡住（✅ V1002 已修：原先允许重复且静默取一条）")
+    void duplicateKeyHash_isRejectedByUniqueIndex() {
+        ApiKey a = insert(newSeed("dup-a", testUserId, "active", 0L).build());
+        String sameHash = a.getKeyHash();
 
-        ApiKey resolved = apiKeyService.getByKeyValue(dup);
-        long rows = countByKeyValue(dup);
+        log.info("[唯一·{}] 第一行 keyHash={}…，尝试插入相同哈希的第二行", runId, sameHash.substring(0, 12));
 
-        log.info("[缺陷·重复密钥·{}] 同 keyValue 的物理行数={} → getByKeyValue 静默返回 {}（未抛异常）",
-                runId, rows, resolved == null ? "null" : brief(resolved.getKeyName()));
+        // ⚠️ V1002 之前这里会成功，且 getByKeyValue 不报错、静默返回其中一条 ——
+        //    「A 拿自己的 Key 被认证成 B」的直接来源（无 ORDER BY，取决于存储顺序）。
+        //    ⚠️ 必须复用第一行真实的 keyHash：早先这版自己拼了个字符串去算哈希，
+        //    结果两行哈希根本不同，插入当然成功，用例变成「什么都没测」。
+        assertThatThrownBy(() -> insert(newSeed("dup-b", otherUserId, "active", 0L)
+                .keyHash(sameHash)
+                .build()))
+                .as("重复 keyHash 必须被唯一索引拒绝，而不是静默插入")
+                .isInstanceOf(Exception.class);
 
-        // ⚠️ 断言的是【当前实现的行为】。DDL 上 keyValue 没有任何唯一索引，全表只有主键。
-        // 「Key 不重复」全靠 IdUtil.simpleUUID() 的随机性 —— 32 位 hex，碰撞概率极低，但**架构上没有兜底**。
-        // 一旦碰撞（或有人手工插数据 / 未来换成可预测的生成方式），后果是：
-        //   getByKeyValue 静默返回其中一条，**认证到哪个用户取决于读取顺序**，
-        //   而且没有任何异常、没有日志 —— 一个用户会拿着另一个用户的 Key 通过认证。
-        // 该修的：给 keyValue 加唯一索引（同时把 Key 改成哈希存储，见 issue 文档），
-        //        并让 createApiKey 在冲突时重试生成。
-        // 修好后：插入重复 keyValue 本身就该失败，本用例整体改写。
-        assertThat(rows).as("数据库允许两行同 keyValue（缺陷，不是期望行为）").isEqualTo(2);
-        assertThat(resolved).as("而且不报错，静默返回一条 —— 比直接报错更危险").isNotNull();
-        assertThat(resolved.getKeyName())
-                .as("返回的是先插入的那条（无 ORDER BY，实际取决于存储顺序）")
-                .isIn(a.getKeyName(), b.getKeyName());
-        assertThat(a.getKeyName()).isNotEqualTo(b.getKeyName());
+        assertThat(countByKeyHash(sameHash)).as("物理上只能有一行持有该哈希").isEqualTo(1);
+        assertThat(a.getId()).isNotNull();
+    }
+
+    @Test
+    @DisplayName("密钥已哈希 · 库里不存明文，且明文只在创建返回时出现一次")
+    void createApiKey_storesHashNotPlaintext() {
+        ApiKey created = apiKeyService.createApiKey(MARKER + runId + "-h1", user(testUserId));
+        String plain = created.getKeyValue();
+
+        log.info("[已哈希·{}] 创建返回明文={}… 库中 keyHash={}… keyPrefix={} 库里明文列={}",
+                runId, plain.substring(0, 11), created.getKeyHash().substring(0, 12),
+                created.getKeyPrefix(), "（应为 null）");
+
+        assertThat(plain).as("创建时必须把明文返回给用户一次（否则用户拿不到 Key）")
+                .startsWith("sk-").hasSize(35);
+        assertThat(created.getKeyHash())
+                .as("落库的必须是 SHA-256，不是明文").isEqualTo(ApiKeyHasher.sha256Hex(plain)).hasSize(64);
+        assertThat(created.getKeyPrefix()).as("前缀取明文前 8 位").isEqualTo(plain.substring(0, 8));
+
+        // 从库里重新读一遍，确认明文没有落到 keyValue 列
+        ApiKey fromDb = apiKeyMapper.selectOneById(created.getId());
+        assertThat(fromDb.getKeyHash()).as("哈希已落库").isEqualTo(ApiKeyHasher.sha256Hex(plain));
+        assertThat(fromDb.getKeyValue()).as("明文绝不能落库（实体上是 @Column(ignore=true)）").isNull();
+
+        // 而用它鉴权仍然要能查到 —— 哈希存储不能把功能弄坏
+        assertThat(apiKeyService.getByKeyValue(plain))
+                .as("按明文鉴权仍应命中同一行").isNotNull()
+                .extracting(ApiKey::getId).isEqualTo(created.getId());
+    }
+
+    @Test
+    @DisplayName("轮换 · 换发新 Key，旧 Key 立即失效，名称与用量统计保留（哈希不可逆的配套能力）")
+    void rotateApiKey_issuesNewKeyAndInvalidatesOld() {
+        ApiKey created = apiKeyService.createApiKey(MARKER + runId + "-r1", user(testUserId));
+        String oldPlain = created.getKeyValue();
+        apiKeyService.updateUsageStats(created.getId(), 7);
+
+        ApiKey rotated = apiKeyService.rotateApiKey(created.getId(), testUserId);
+        String newPlain = rotated.getKeyValue();
+
+        log.info("[轮换·{}] 旧={}… → 新={}… | 旧 Key 还能用={} | 新 Key 能用={} | totalTokens={} keyName={}",
+                runId, oldPlain.substring(0, 11), newPlain.substring(0, 11),
+                apiKeyService.getByKeyValue(oldPlain) != null,
+                apiKeyService.getByKeyValue(newPlain) != null,
+                rotated.getTotalTokens(), rotated.getKeyName());
+
+        assertThat(newPlain).as("必须换发一把新的、格式正确的 Key").startsWith("sk-").hasSize(35);
+        assertThat(newPlain).as("新 Key 不能和旧的相同").isNotEqualTo(oldPlain);
+        assertThat(apiKeyService.getByKeyValue(newPlain)).as("新 Key 必须可用").isNotNull();
+        assertThat(apiKeyService.getByKeyValue(oldPlain)).as("旧 Key 必须立即失效").isNull();
+
+        ApiKey fromDb = apiKeyMapper.selectOneById(created.getId());
+        assertThat(fromDb.getKeyHash()).as("库里存的是新明文的哈希").isEqualTo(ApiKeyHasher.sha256Hex(newPlain));
+        assertThat(fromDb.getKeyValue()).as("新明文同样不落库").isNull();
+        assertThat(fromDb.getKeyPrefix()).as("前缀跟着更新").isEqualTo(newPlain.substring(0, 8));
+        assertThat(fromDb.getKeySuffix()).as("后缀跟着更新").isEqualTo(newPlain.substring(newPlain.length() - 4));
+        assertThat(fromDb.getTotalTokens()).as("用量统计保留在同一行上，便于继续观察这个用途的消耗").isEqualTo(7L);
+        assertThat(fromDb.getKeyName()).as("名称保留").isEqualTo(created.getKeyName());
+    }
+
+    @Test
+    @DisplayName("轮换 · 越权轮换别人的 Key 必须失败，且绝不能改动别人的数据")
+    void rotateApiKey_rejectsOthersKey() {
+        ApiKey other = insert(newSeed("r2", otherUserId, "active", 0L).build());
+        String hashBefore = other.getKeyHash();
+
+        Integer code = codeOf(() -> apiKeyService.rotateApiKey(other.getId(), testUserId));
+
+        log.info("[轮换·越权·{}] 用别人的 id 轮换 → code={}（期望 {}）| 对方哈希是否被改={}",
+                runId, code, HttpsCodeEnum.NOT_FOUND_ERROR.getCode(),
+                !hashBefore.equals(apiKeyMapper.selectOneById(other.getId()).getKeyHash()));
+
+        assertThat(code).as("轮换必须校验归属").isEqualTo(HttpsCodeEnum.NOT_FOUND_ERROR.getCode());
+        assertThat(apiKeyMapper.selectOneById(other.getId()).getKeyHash())
+                .as("越权请求绝不能改动对方那一行").isEqualTo(hashBefore);
+    }
+
+    @Test
+    @DisplayName("轮换 · 已撤销的 Key 轮换后恢复可用（这是「丢了 Key」的主要恢复路径）")
+    void rotateApiKey_reactivatesRevokedKey() {
+        ApiKey created = apiKeyService.createApiKey(MARKER + runId + "-r3", user(testUserId));
+        apiKeyService.revokeApiKey(created.getId(), testUserId);
+        assertThat(apiKeyService.getByKeyValue(created.getKeyValue())).as("前置：撤销后不可用").isNull();
+
+        ApiKey rotated = apiKeyService.rotateApiKey(created.getId(), testUserId);
+
+        log.info("[轮换·复活·{}] 撤销后轮换 → status={} 新 Key 可用={}",
+                runId, apiKeyMapper.selectOneById(created.getId()).getStatus(),
+                apiKeyService.getByKeyValue(rotated.getKeyValue()) != null);
+
+        assertThat(apiKeyMapper.selectOneById(created.getId()).getStatus()).as("轮换后应为 active").isEqualTo("active");
+        assertThat(apiKeyService.getByKeyValue(rotated.getKeyValue())).as("新 Key 可用").isNotNull();
+    }
+
+    @Test
+    @DisplayName("轮换 · 不存在的 id 报 NOT_FOUND")
+    void rotateApiKey_notFound() {
+        Integer code = codeOf(() -> apiKeyService.rotateApiKey(-1L, testUserId));
+        log.info("[轮换·不存在·{}] id=-1 → code={}", runId, code);
+        assertThat(code).isEqualTo(HttpsCodeEnum.NOT_FOUND_ERROR.getCode());
     }
 
     @Test
@@ -471,12 +585,18 @@ public class ApiKeyServiceTest extends IntegrationTestSupport {
     /**
      * 造行模板。keyName 一定带 MARKER + runId ⇒ cleanup 能圈住；
      * userId 由调用方指定，用来验证隔离。
+     *
+     * <p>V1002 之后库里只认 {@code keyHash}，所以种子必须同时写哈希与前缀；
+     * {@code keyValue} 列已废弃（迁移末尾置空），这里显式写 null 与线上保持一致。
      */
     private ApiKey.ApiKeyBuilder newSeed(String suffix, Long userId, String status, Long totalTokens) {
         LocalDateTime now = LocalDateTime.now();
+        String plain = "sk-seed-" + runId + "-" + suffix;
         return ApiKey.builder()
                 .userId(userId)
-                .keyValue("sk-seed-" + runId + "-" + suffix)
+                .keyHash(ApiKeyHasher.sha256Hex(plain))
+                .keyPrefix(ApiKeyHasher.prefix(plain))
+                .keySuffix(ApiKeyHasher.suffix(plain))
                 .keyName(MARKER + runId + "-" + suffix)
                 .status(status)
                 .totalTokens(totalTokens)
@@ -508,8 +628,8 @@ public class ApiKeyServiceTest extends IntegrationTestSupport {
         return countRows("keyName LIKE ?", pattern);
     }
 
-    private long countByKeyValue(String keyValue) {
-        return countRows("keyValue = ?", keyValue);
+    private long countByKeyHash(String keyHash) {
+        return countRows("keyHash = ?", keyHash);
     }
 
     private long countRows(String where, String param) {

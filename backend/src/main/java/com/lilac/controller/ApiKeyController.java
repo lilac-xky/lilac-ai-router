@@ -13,6 +13,7 @@ import com.lilac.enums.HttpsCodeEnum;
 import com.lilac.exception.BusinessException;
 import com.lilac.service.ApiKeyService;
 import com.lilac.service.UserService;
+import com.lilac.utils.ApiKeyHasher;
 import com.mybatisflex.core.paginate.Page;
 import com.mybatisflex.core.query.QueryWrapper;
 import jakarta.annotation.Resource;
@@ -73,16 +74,14 @@ public class ApiKeyController {
                 .orderBy("createTime", false);
         Page<ApiKey> apiKeyPage = apiKeyService.page(Page.of(pageNum, pageSize), queryWrapper);
 
-        // 转换为 VO（列表中部分隐藏 Key 值）
+        // 转换为 VO（列表中只展示前缀与后缀 —— 哈希不可逆，拿不到明文来脱敏）
         Page<ApiKeyVO> apiKeyVOPage = new Page<>(pageNum, pageSize, apiKeyPage.getTotalRow());
         List<ApiKeyVO> apiKeyVOList = apiKeyPage.getRecords().stream()
                 .map(apiKey -> {
                     ApiKeyVO vo = BeanUtil.copyProperties(apiKey, ApiKeyVO.class);
-                    // 隐藏部分 Key 值（只显示前8位和后4位）
-                    if (vo.getKeyValue() != null && vo.getKeyValue().length() > 12) {
-                        String key = vo.getKeyValue();
-                        vo.setKeyValue(key.substring(0, 8) + "****" + key.substring(key.length() - 4));
-                    }
+                    // 展示形态与改动前一致：sk-f7449****XXXX
+                    // （V1002 迁移的存量行没有后缀，会降级成 sk-f7449****）
+                    vo.setKeyValue(ApiKeyHasher.masked(apiKey.getKeyPrefix(), apiKey.getKeySuffix()));
                     return vo;
                 })
                 .collect(Collectors.toList());
@@ -136,5 +135,25 @@ public class ApiKeyController {
         User loginUser = userService.getLoginUser(request);
         boolean result = apiKeyService.revokeApiKey(deleteRequest.getId(), loginUser.getId());
         return Result.success(result);
+    }
+
+    /**
+     * 轮换 API Key：换一把新 Key，旧 Key 立即失效。
+     * 明文不可逆，用户丢了 Key 只能换，不能查回 —— 这是哈希存储的配套能力
+     *
+     * @param deleteRequest 只用到 id
+     * @param request       请求
+     * @return 带新明文的 API Key（明文只在本次返回中出现）
+     */
+    @PostMapping("/rotate")
+    @AuthCheck(mustRole = UserConstant.DEFAULT_ROLE)
+    public Result<ApiKeyVO> rotateApiKey(@RequestBody DeleteRequest deleteRequest, HttpServletRequest request) {
+        if (deleteRequest == null || deleteRequest.getId() == null) {
+            throw new BusinessException(HttpsCodeEnum.PARAMS_ERROR);
+        }
+        User loginUser = userService.getLoginUser(request);
+        ApiKey rotated = apiKeyService.rotateApiKey(deleteRequest.getId(), loginUser.getId());
+        // 与创建一致：这里返回完整明文，且只在这一次响应里出现
+        return Result.success(BeanUtil.copyProperties(rotated, ApiKeyVO.class));
     }
 }

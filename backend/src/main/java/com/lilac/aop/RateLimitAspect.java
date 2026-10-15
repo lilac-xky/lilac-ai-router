@@ -5,6 +5,7 @@ import com.lilac.annotation.RateLimit;
 import com.lilac.enums.HttpsCodeEnum;
 import com.lilac.exception.BusinessException;
 import com.lilac.service.RateLimitService;
+import com.lilac.utils.ApiKeyHasher;
 import jakarta.annotation.Resource;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.extern.slf4j.Slf4j;
@@ -62,7 +63,10 @@ public class RateLimitAspect {
             case API_KEY:
                 String authorization = request.getHeader("Authorization");
                 if (authorization != null && authorization.startsWith("Bearer ")) {
-                    return "rate_limit:api_key:" + authorization.substring(7);
+                    // 用哈希做限流键：切面跑在鉴权之前，这时还没有 ApiKey 实体可用，
+                    // 而哈希的输入就是明文本身 —— 既能避开明文落 Redis（redis-cli --scan 捞得到可用凭据），
+                    // 又不需要为此调整切面顺序
+                    return "rate_limit:api_key:" + ApiKeyHasher.sha256Hex(authorization.substring(7));
                 }
                 return null;
             case IP:

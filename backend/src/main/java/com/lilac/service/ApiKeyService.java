@@ -38,6 +38,16 @@ public interface ApiKeyService extends IService<ApiKey> {
     boolean revokeApiKey(Long id, Long userId);
 
     /**
+     * 轮换 API Key：原地换一把新 Key 并重新激活，旧明文立即失效。
+     * 明文不可逆，用户丢了 Key 只能换，不能查回。
+     *
+     * @param id API Key ID
+     * @param userId 用户 ID
+     * @return 带新明文的 API Key（明文只在本次返回中出现）
+     */
+    ApiKey rotateApiKey(Long id, Long userId);
+
+    /**
      * 根据 API Key 值获取 API Key
      *
      * @param keyValue API Key 值

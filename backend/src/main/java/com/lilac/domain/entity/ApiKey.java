@@ -36,9 +36,25 @@ public class ApiKey implements Serializable {
     private Long userId;
 
     /**
-     * API Key值（sk-xxx格式）
+     * API Key 明文。
      */
+    @Column(ignore = true)
     private String keyValue;
+
+    /**
+     * SHA-256(明文) 的小写 hex，鉴权时按它查
+     */
+    private String keyHash;
+
+    /**
+     * 明文前 8 位，仅用于列表脱敏展示（哈希不可逆，不能拿它反推展示前缀）
+     */
+    private String keyPrefix;
+
+    /**
+     * 明文后 4 位。V1002 迁移的存量行为 NULL（哈希反推不出），展示时降级为只有前缀
+     */
+    private String keySuffix;
 
     /**
      * Key名称/备注

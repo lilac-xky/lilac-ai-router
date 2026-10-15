@@ -17,6 +17,9 @@
 
                     <template v-else-if="column.key === 'action'">
                         <a-space>
+                            <a-button size="small" @click="handleRotate(record)">
+                                重新生成
+                            </a-button>
                             <a-button size="small" danger :disabled="record.status !== 'active'"
                                 @click="handleRevoke(record)">
                                 撤销
@@ -28,19 +31,20 @@
         </a-card>
     </div>
 
-    <a-modal v-model:open="createModalVisible" title="创建 API Key" @ok="handleOk" @cancel="handleCloseModal"
+    <a-modal v-model:open="createModalVisible" :title="newApiKey ? 'API Key' : '创建 API Key'" @ok="handleOk" @cancel="handleCloseModal"
         :confirm-loading="creating" :ok-text="newApiKey ? '完成' : '确定'">
-        <a-form :model="createForm" :label-col="{ span: 6 }">
+        <a-form :model="createForm" :label-col="{ span: 6 }" v-if="!newApiKey">
             <a-form-item label="Key 名称" name="keyName">
                 <a-input v-model:value="createForm.keyName" placeholder="请输入 Key 名称" />
             </a-form-item>
         </a-form>
 
-        <!-- 新创建的 Key -->
-        <a-alert v-if="newApiKey" type="success" message="API Key 创建成功！" style="margin-top: 16px">
+        <!-- 新建或轮换后的 Key -->
+        <a-alert v-if="newApiKey" type="success" :message="rotatedHint ? '已生成新的 API Key！' : 'API Key 创建成功！'" style="margin-top: 16px">
             <template #description>
                 <div style="margin-top: 8px">
-                    <strong>请复制保存以下 API Key，关闭后将无法再次查看完整内容：</strong>
+                    <strong v-if="rotatedHint">原来的 Key 已失效。请复制保存以下新 Key，关闭后将无法再次查看完整内容：</strong>
+                    <strong v-else>请复制保存以下 API Key，关闭后将无法再次查看完整内容：</strong>
                     <a-input :value="newApiKey.keyValue" readonly style="margin-top: 8px">
                         <template #addonAfter>
                             <a-button size="small" @click="copyApiKey">复制</a-button>
@@ -53,7 +57,7 @@
 </template>
 
 <script lang="ts" setup>
-import { createApiKey, listMyApiKeys, revokeApiKey } from '@/api/apiKeyController'
+import { createApiKey, listMyApiKeys, revokeApiKey, rotateApiKey } from '@/api/apiKeyController'
 import { message, Modal } from 'ant-design-vue'
 import { onMounted, ref } from 'vue'
 
@@ -106,6 +110,8 @@ const creating = ref(false)
 const createForm = ref<API.ApiKeyCreateRequest>({})
 // 新创建的 Key
 const newApiKey = ref<API.ApiKeyVO>()
+// 当前弹窗里展示的 Key 是「轮换」来的还是「创建」来的（仅影响文案）
+const rotatedHint = ref(false)
 // 分页配置
 const pagination = ref({
     current: 1,
@@ -120,6 +126,7 @@ const showCreateModal = () => {
     // 重置上一次的创建状态
     createForm.value = {}
     newApiKey.value = undefined
+    rotatedHint.value = false
     createModalVisible.value = true
 }
 
@@ -128,6 +135,7 @@ const handleCloseModal = () => {
     createModalVisible.value = false
     createForm.value = {}
     newApiKey.value = undefined
+    rotatedHint.value = false
 }
 
 // 处理弹窗 OK 按钮：已创建则关闭，否则执行创建
@@ -200,6 +208,33 @@ const handleRevoke = (record: API.ApiKeyVO) => {
                 }
             } catch (error: any) {
                 message.error('撤销失败：' + error.message)
+            }
+        },
+    })
+}
+
+// 处理重新生成（轮换）API Key
+// 明文不可逆，丢了 Key 只能换发新的；旧 Key 会被立即作废
+const handleRotate = (record: API.ApiKeyVO) => {
+    Modal.confirm({
+        title: '确认重新生成',
+        content: `将换发一把新的 API Key，原来的 Key「${record.keyValue}」会立即失效。`
+            + `如果它已经用在某个地方，记得同步更新。`,
+        okText: '重新生成',
+        onOk: async () => {
+            try {
+                const res = await rotateApiKey({ id: record.id })
+                if (res.data.code === 200 && res.data.data) {
+                    // 复用创建时的弹窗：新明文只在这里出现一次
+                    rotatedHint.value = true
+                    newApiKey.value = res.data.data
+                    createModalVisible.value = true
+                    await loadApiKeys()
+                } else {
+                    message.error(res.data.msg || '重新生成失败')
+                }
+            } catch (e: unknown) {
+                message.error('重新生成失败：' + (e instanceof Error ? e.message : String(e)))
             }
         },
     })
