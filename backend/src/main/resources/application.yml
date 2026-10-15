@@ -45,3 +45,14 @@ management:
     metrics:
       export:
         enabled: true
+
+# 路由评分权重
+lilac:
+  routing:
+    scoring:
+      weights:
+        cost: 0.3
+        latency: 0.3
+        successRate: 0.3
+        priority: 0.1
+        health: 0.0

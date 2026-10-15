@@ -14,6 +14,10 @@ import com.lilac.enums.ProbeFailureKind;
 import com.lilac.enums.ProviderStatusEnum;
 import com.lilac.mapper.RequestLogMapper;
 import com.lilac.metrics.AIMetricsCollector;
+import com.lilac.scoring.CompositeScorer;
+import com.lilac.scoring.ScoringBounds;
+import com.lilac.scoring.ScoringContext;
+import com.lilac.scoring.ScoringMath;
 import com.lilac.service.HealthCheckService;
 import com.lilac.service.ModelProviderService;
 import com.lilac.service.ModelService;
@@ -59,6 +63,8 @@ public class HealthCheckServiceImpl implements HealthCheckService {
     private AIMetricsCollector aiMetricsCollector;
     @Resource
     private ProbeWindowStore probeWindowStore;
+    @Resource
+    private CompositeScorer compositeScorer;
 
     // 统计请求日志的时间范围（小时）
     private static final int STATS_HOURS = 24;
@@ -80,11 +86,7 @@ public class HealthCheckServiceImpl implements HealthCheckService {
     // 探针使用的模型类型：只有 chat 模型才能验证「真的能对话」
     private static final String PROBE_MODEL_TYPE = "chat";
 
-    // 综合得分各维度权重（合计为 1.0）
-    private static final double COST_WEIGHT = 0.3;
-    private static final double LATENCY_WEIGHT = 0.3;
-    private static final double SUCCESS_RATE_WEIGHT = 0.3;
-    private static final double PRIORITY_WEIGHT = 0.1;
+    // 综合得分各维度权重已迁到 lilac.scoring.CompositeScorer 的配置项（lilac.routing.scoring.weights.*）
 
     /**
      * 样本量下限：24h 窗口内样本少于这个数时，不据成功率改写健康状态。
@@ -384,7 +386,7 @@ public class HealthCheckServiceImpl implements HealthCheckService {
         int maxPriority = Integer.MIN_VALUE;
 
         for (Model model : models) {
-            BigDecimal cost = nullToZero(model.getInputPrice()).add(nullToZero(model.getOutputPrice()));
+            BigDecimal cost = ScoringMath.nullToZero(model.getInputPrice()).add(ScoringMath.nullToZero(model.getOutputPrice()));
             if (minCost == null || cost.compareTo(minCost) < 0) {
                 minCost = cost;
             }
@@ -491,58 +493,16 @@ public class HealthCheckServiceImpl implements HealthCheckService {
     }
 
     /**
-     * 计算模型的综合得分（越低越好）
+     * 计算模型的综合得分（越低越好）。
+     * 维度与权重已抽到 {@link com.lilac.scoring.CompositeScorer}，权重可配。
      */
     private BigDecimal calculateScore(Model model, ModelStats stats, NormalizationParams params) {
-        // 1. 成本得分（归一化到 0-1）
-        BigDecimal modelCost = nullToZero(model.getInputPrice()).add(nullToZero(model.getOutputPrice()));
-        double costScore = normalize(modelCost, params.minCost, params.maxCost);
-        // 2. 延迟得分（归一化到 0-1）
-        int latency = stats.avgLatency > 0 ? stats.avgLatency : 5000; // 默认5秒
-        double latencyScore = normalize(latency, params.minLatency, params.maxLatency);
-        // 3. 成功率得分（归一化到 0-1，成功率越高得分越低）
-        double successRateScore = 1.0 - (stats.successRate.doubleValue() / 100.0);
-        // 4. 优先级得分（归一化到 0-1，优先级越高得分越低）
-        int priority = model.getPriority() != null ? model.getPriority() : 0;
-        double priorityScore = 1.0 - normalize(priority, params.minPriority, params.maxPriority);
-        // 综合得分
-        double score = costScore * COST_WEIGHT +
-                latencyScore * LATENCY_WEIGHT +
-                successRateScore * SUCCESS_RATE_WEIGHT +
-                priorityScore * PRIORITY_WEIGHT;
-        return BigDecimal.valueOf(score).setScale(4, RoundingMode.HALF_UP);
-    }
-
-    /**
-     * 归一化整型数值到 0-1 范围
-     */
-    private double normalize(int value, int min, int max) {
-        int range = max - min;
-        if (range == 0) {
-            return 0.0;
-        }
-        return (double) (value - min) / range;
-    }
-
-    /**
-     * 归一化 BigDecimal 数值到 0-1 范围
-     */
-    private double normalize(BigDecimal value, BigDecimal min, BigDecimal max) {
-        if (value == null || min == null || max == null) {
-            return 0.0;
-        }
-        double range = max.subtract(min).doubleValue();
-        if (range == 0) {
-            return 0.0;
-        }
-        return value.subtract(min).doubleValue() / range;
-    }
-
-    /**
-     * null 安全转换：null 视为 0
-     */
-    private BigDecimal nullToZero(BigDecimal value) {
-        return value != null ? value : BigDecimal.ZERO;
+        ScoringBounds bounds = new ScoringBounds(
+                params.minCost, params.maxCost,
+                params.minLatency, params.maxLatency,
+                params.minPriority, params.maxPriority);
+        ScoringContext context = new ScoringContext(bounds, stats.avgLatency, stats.successRate);
+        return compositeScorer.score(model, context);
     }
 
     /**
