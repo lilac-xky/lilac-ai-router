@@ -248,7 +248,7 @@ public class ChatServiceImpl implements ChatService {
                     (int) duration, "success", null);
 
             // 收集监控指标
-            aiMetricsCollector.recordRequest(model.getModelKey(), userId, apiKeyId != null ? apiKeyId.toString() : null);
+            aiMetricsCollector.recordRequest(model.getModelKey());
             aiMetricsCollector.recordTokens(model.getModelKey(), totalTokens);
             aiMetricsCollector.recordResponseTime(model.getModelKey(), duration);
 
@@ -268,7 +268,8 @@ public class ChatServiceImpl implements ChatService {
             requestLogService.logRequest(userId, apiKeyId, model.getId(), model.getModelKey(), 0, 0, 0,
                     (int) duration, "failed", e.getMessage());
 
-            // 收集错误指标
+            // 收集错误指标。请求数也要记：只计错误不计请求会让错误率分母缺一块
+            aiMetricsCollector.recordRequest(model.getModelKey());
             aiMetricsCollector.recordError(model.getModelKey(), "MODEL_ERROR");
             throw e;
         }
@@ -365,7 +366,7 @@ public class ChatServiceImpl implements ChatService {
                             (int) duration, "success", null);
 
                     // 收集监控指标
-                    aiMetricsCollector.recordRequest(model.getModelKey(), userId, apiKeyId != null ? apiKeyId.toString() : null);
+                    aiMetricsCollector.recordRequest(model.getModelKey());
                     aiMetricsCollector.recordTokens(model.getModelKey(), totalTokens);
                     aiMetricsCollector.recordResponseTime(model.getModelKey(), duration);
 
@@ -380,7 +381,8 @@ public class ChatServiceImpl implements ChatService {
                     requestLogService.logRequest(userId, apiKeyId, model.getId(), model.getModelKey(), 0, 0, 0,
                             (int) duration, "failed", error.getMessage());
 
-                    // 收集流式错误指标
+                    // 收集流式错误指标。请求数同样要记，否则错误率分母缺一块
+                    aiMetricsCollector.recordRequest(model.getModelKey());
                     aiMetricsCollector.recordError(model.getModelKey(), "STREAM_ERROR");
 
                     // 已产出的部分照收（上游已计费），一个字都没出才全退
