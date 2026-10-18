@@ -108,8 +108,7 @@ public class ProviderCircuitBreaker {
         // 每个 provider 只登记一次，Gauge 持 supplier，采集时才读真实状态
         if (gaugesRegistered.add(key)) {
             aiMetricsCollector.registerCircuitStateGauge(key,
-                    () -> CIRCUIT_STATE_CODES.getOrDefault(breaker.getState(), 0));
-        }
+                    () -> CIRCUIT_STATE_CODES.getOrDefault(breaker.getState(), 0));        }
         return breaker;
     }
 }

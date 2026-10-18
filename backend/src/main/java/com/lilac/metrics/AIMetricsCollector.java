@@ -131,11 +131,16 @@ public class AIMetricsCollector {
 
     /**
      * 登记熔断器状态：0=关闭 1=打开 2=半开。
-     * Gauge 持的是 supplier 而不是快照值，采集时才读，才跟得上熔断器的真实状态
+     * Gauge 持 supplier 而不是快照值，采集时才读，才跟得上熔断器的真实状态。
+     *
+     * <p>必须用 {@code builder(String, Supplier<T>)} 这个重载，不能用
+     * {@code builder(String, T, ToDoubleFunction<T>)} —— 后者对 source 持弱引用，
+     * 被登记的 lambda 一旦失去强引用就会被回收，指标照常导出、值却恒为 NaN。
+     * 本机实测踩过：注册成功、curl 也抓得到，只有值是 NaN。
      */
-    public void registerCircuitStateGauge(String providerName, java.util.function.IntSupplier stateSupplier) {
+    public void registerCircuitStateGauge(String providerName, java.util.function.Supplier<? extends Number> stateSupplier) {
         io.micrometer.core.instrument.Gauge
-                .builder("ai.circuit.state", stateSupplier, source -> source.getAsInt())
+                .builder("ai.circuit.state", stateSupplier)
                 .description("熔断器状态：0=关闭 1=打开 2=半开")
                 .tag("provider", safe(providerName))
                 .register(meterRegistry);

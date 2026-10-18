@@ -54,7 +54,6 @@ class AIMetricsCollectorTest {
         collector.registerCircuitStateGauge(null, () -> 2);
         return collector;
     }
-
     @Test
     void sameMeterName_alwaysCarriesTheSameTagKeys() {
         SimpleMeterRegistry registry = new SimpleMeterRegistry();
@@ -114,5 +113,29 @@ class AIMetricsCollectorTest {
 
         assertTrue(duplicates.isEmpty(), "导出后重名（会互相覆盖）：" + duplicates
                 + "；原始 name=" + names);
+    }
+
+    /**
+     * Gauge 必须读出真实数值，不能是 NaN。
+     *
+     * <p>这条来自一次真实踩坑：最初用 {@code Gauge.builder(name, IntSupplier, ToDoubleFunction)}
+     * 的重载，注册成功、指标也导出了，但值恒为 NaN —— 那个重载持弱引用，lambda 没被强引用就回收了。
+     * 只看「注册成功」是发现不了的，必须真读一次。
+     */
+    @Test
+    void circuitStateGauge_readsActualValueInsteadOfNaN() {
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        AIMetricsCollector collector = new AIMetricsCollector(registry);
+        int[] state = {0};
+        collector.registerCircuitStateGauge("deepseek", () -> state[0]);
+
+        assertEquals(0.0, registry.get("ai.circuit.state").tag("provider", "deepseek").gauge().value());
+
+        // 状态跟着 supplier 变，说明真的是采集时读，不是注册时的快照
+        state[0] = 1;
+        assertEquals(1.0, registry.get("ai.circuit.state").tag("provider", "deepseek").gauge().value());
+
+        state[0] = 2;
+        assertEquals(2.0, registry.get("ai.circuit.state").tag("provider", "deepseek").gauge().value());
     }
 }

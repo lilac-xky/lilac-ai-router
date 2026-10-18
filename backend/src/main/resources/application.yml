@@ -41,6 +41,20 @@ management:
   metrics:
     tags:
       application: ${spring.application.name}
+    distribution:
+      # 默认关着 percentile histogram：不开的话 Timer 只导出 count/sum/max，
+      # 完全没有 _bucket 系列，所有 histogram_quantile 查询（P50/P95/P99）都会返回空
+      percentiles-histogram:
+        http.server.requests: true
+        ai.response.time: true
+        ai.ttft: true
+        ai.probe.ttft: true
+      # 关掉客户端算的分位值：Prometheus 抓的是 _bucket，客户端分位既不可聚合又白占序列
+      percentiles:
+        http.server.requests: ""
+        ai.response.time: ""
+        ai.ttft: ""
+        ai.probe.ttft: ""
   prometheus:
     metrics:
       export:
