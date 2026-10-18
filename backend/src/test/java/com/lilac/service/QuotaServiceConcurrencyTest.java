@@ -339,12 +339,29 @@ public class QuotaServiceConcurrencyTest extends IntegrationTestSupport {
      * @return 实际删除行数；失败不抛（清理失败不应让一个本来绿了的用例变红），只告警
      */
     private int physicallyDelete(String accountPattern) {
+        // billing_record / recharge_record 没有外键级联，user 删掉后它们会变成永久孤儿行，
+        // 每跑一次攒一批（实测单次 run 可达上千行）。所以要按 userId 先清子表
+        String orphans = "DELETE b FROM billing_record b JOIN `user` u ON b.userId = u.id"
+                + " WHERE u.userName = ? AND u.userAccount LIKE ?";
+        String rechargeOrphans = "DELETE r FROM recharge_record r JOIN `user` u ON r.userId = u.id"
+                + " WHERE u.userName = ? AND u.userAccount LIKE ?";
         String sql = "DELETE FROM `user` WHERE userName = ? AND userAccount LIKE ?";
-        try (Connection conn = dataSource.getConnection();
-             PreparedStatement ps = conn.prepareStatement(sql)) {
-            ps.setString(1, SEED_MARKER);
-            ps.setString(2, accountPattern);
-            return ps.executeUpdate();
+        try (Connection conn = dataSource.getConnection()) {
+            try (PreparedStatement ps = conn.prepareStatement(orphans)) {
+                ps.setString(1, SEED_MARKER);
+                ps.setString(2, accountPattern);
+                ps.executeUpdate();
+            }
+            try (PreparedStatement ps = conn.prepareStatement(rechargeOrphans)) {
+                ps.setString(1, SEED_MARKER);
+                ps.setString(2, accountPattern);
+                ps.executeUpdate();
+            }
+            try (PreparedStatement ps = conn.prepareStatement(sql)) {
+                ps.setString(1, SEED_MARKER);
+                ps.setString(2, accountPattern);
+                return ps.executeUpdate();
+            }
         } catch (SQLException e) {
             log.warn("物理清理测试用户失败（pattern={}），本次残留需手工清理："
                     + "DELETE FROM `user` WHERE userName = 'quota-test'", accountPattern, e);

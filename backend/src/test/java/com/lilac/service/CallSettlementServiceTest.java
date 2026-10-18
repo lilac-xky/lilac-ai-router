@@ -222,12 +222,28 @@ public class CallSettlementServiceTest extends IntegrationTestSupport {
     }
 
     private int physicallyDeleteUsers(String accountPattern) {
+        // billing_record 没有外键级联，user 删掉后它会变成永久孤儿行；先按 userId 清子表
+        String orphans = "DELETE b FROM billing_record b JOIN `user` u ON b.userId = u.id"
+                + " WHERE u.userName = ? AND u.userAccount LIKE ?";
+        String rechargeOrphans = "DELETE r FROM recharge_record r JOIN `user` u ON r.userId = u.id"
+                + " WHERE u.userName = ? AND u.userAccount LIKE ?";
         String sql = "DELETE FROM `user` WHERE userName = ? AND userAccount LIKE ?";
-        try (Connection conn = dataSource.getConnection();
-             PreparedStatement ps = conn.prepareStatement(sql)) {
-            ps.setString(1, SEED_MARKER);
-            ps.setString(2, accountPattern);
-            return ps.executeUpdate();
+        try (Connection conn = dataSource.getConnection()) {
+            try (PreparedStatement ps = conn.prepareStatement(orphans)) {
+                ps.setString(1, SEED_MARKER);
+                ps.setString(2, accountPattern);
+                ps.executeUpdate();
+            }
+            try (PreparedStatement ps = conn.prepareStatement(rechargeOrphans)) {
+                ps.setString(1, SEED_MARKER);
+                ps.setString(2, accountPattern);
+                ps.executeUpdate();
+            }
+            try (PreparedStatement ps = conn.prepareStatement(sql)) {
+                ps.setString(1, SEED_MARKER);
+                ps.setString(2, accountPattern);
+                return ps.executeUpdate();
+            }
         } catch (SQLException e) {
             log.warn("物理清理测试用户失败（pattern={}），本次残留需手工清理", accountPattern, e);
             return 0;

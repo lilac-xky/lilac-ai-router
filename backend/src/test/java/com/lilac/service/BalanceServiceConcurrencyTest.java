@@ -351,33 +351,34 @@ public class BalanceServiceConcurrencyTest extends IntegrationTestSupport {
 
     /**
      * 物理删除测试用户 —— deleteById 是逻辑删除，行会永久堆在表里。
-     * WHERE 用盖章字段 + 账号前缀双条件，绝不误删真实账号；连带删掉这些用户名下的充值记录
+     * WHERE 用盖章字段 + 账号前缀双条件，绝不误删真实账号；连带删掉这些用户名下的充值记录与账单
      */
     private int physicallyDeleteUsers(String accountPattern) {
+        // billing_record / recharge_record 都没有外键级联，只删 user 会留下永久孤儿行
+        String billingOrphans = "DELETE b FROM billing_record b JOIN `user` u ON b.userId = u.id"
+                + " WHERE u.userName = ? AND u.userAccount LIKE ?";
+        String rechargeOrphans = "DELETE r FROM recharge_record r JOIN `user` u ON r.userId = u.id"
+                + " WHERE u.userName = ? AND u.userAccount LIKE ?";
         String sql = "DELETE FROM `user` WHERE userName = ? AND userAccount LIKE ?";
-        try (Connection conn = dataSource.getConnection();
-             PreparedStatement ps = conn.prepareStatement(sql)) {
-            ps.setString(1, SEED_MARKER);
-            ps.setString(2, accountPattern);
-            int deleted = ps.executeUpdate();
-            if (deleted > 0) {
-                physicallyDeleteRecharges();
+        try (Connection conn = dataSource.getConnection()) {
+            try (PreparedStatement ps = conn.prepareStatement(billingOrphans)) {
+                ps.setString(1, SEED_MARKER);
+                ps.setString(2, accountPattern);
+                ps.executeUpdate();
             }
-            return deleted;
+            try (PreparedStatement ps = conn.prepareStatement(rechargeOrphans)) {
+                ps.setString(1, SEED_MARKER);
+                ps.setString(2, accountPattern);
+                ps.executeUpdate();
+            }
+            try (PreparedStatement ps = conn.prepareStatement(sql)) {
+                ps.setString(1, SEED_MARKER);
+                ps.setString(2, accountPattern);
+                return ps.executeUpdate();
+            }
         } catch (SQLException e) {
             log.warn("物理清理测试用户失败（pattern={}），本次残留需手工清理", accountPattern, e);
             return 0;
-        }
-    }
-
-    private void physicallyDeleteRecharges() {
-        String sql = "DELETE FROM recharge_record WHERE description = ?";
-        try (Connection conn = dataSource.getConnection();
-             PreparedStatement ps = conn.prepareStatement(sql)) {
-            ps.setString(1, "并发幂等测试");
-            ps.executeUpdate();
-        } catch (SQLException e) {
-            log.warn("物理清理测试充值记录失败，本次残留需手工清理", e);
         }
     }
 
