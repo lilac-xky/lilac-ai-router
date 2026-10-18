@@ -99,6 +99,48 @@ public class AIMetricsCollector {
                 "provider", providerName, "model", modelKey, "kind", failureKind).increment();
     }
 
+    /**
+     * 记录一次路由决策：选中了哪个厂商、走的是哪条策略。
+     * 这是「加权评分路由到底有没有生效」唯一的线上证据 —— 只看日志要翻几千行才能统计
+     */
+    public void recordRoutingDecision(String strategy, String providerName, String modelKey) {
+        counter("ai.routing.decisions", "路由决策次数",
+                "strategy", strategy, "provider", providerName, "model", modelKey).increment();
+    }
+
+    /**
+     * 记录首 token 耗时（TTFT）。
+     * 与 {@code ai.response.time} 分开：端到端时长混了生成长度，看不出是上游变慢还是输出变长
+     */
+    public void recordTtft(String providerName, String modelKey, long ttftMillis) {
+        if (ttftMillis < 0) {
+            return;
+        }
+        timer("ai.ttft", "首 token 耗时", "provider", providerName, "model", modelKey)
+                .record(ttftMillis, TimeUnit.MILLISECONDS);
+    }
+
+    /**
+     * 记录一次降级：主选失败换到备选。
+     * from/to 分别是两个模型，便于回答「哪个模型最不稳定、谁在给它兜底」
+     */
+    public void recordFallback(String fromModelKey, String toModelKey, String reason) {
+        counter("ai.fallback", "降级次数",
+                "from", fromModelKey, "to", toModelKey, "reason", reason).increment();
+    }
+
+    /**
+     * 登记熔断器状态：0=关闭 1=打开 2=半开。
+     * Gauge 持的是 supplier 而不是快照值，采集时才读，才跟得上熔断器的真实状态
+     */
+    public void registerCircuitStateGauge(String providerName, java.util.function.IntSupplier stateSupplier) {
+        io.micrometer.core.instrument.Gauge
+                .builder("ai.circuit.state", stateSupplier, source -> source.getAsInt())
+                .description("熔断器状态：0=关闭 1=打开 2=半开")
+                .tag("provider", safe(providerName))
+                .register(meterRegistry);
+    }
+
     private Counter counter(String name, String description, String... tags) {
         String key = cacheKey(name, tags);
         return counters.computeIfAbsent(key, k ->

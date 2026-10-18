@@ -3,6 +3,7 @@ package com.lilac.service.impl;
 import com.lilac.adapter.StreamChunk;
 import com.lilac.domain.entity.Model;
 import com.lilac.domain.entity.ModelProvider;
+import com.lilac.metrics.AIMetricsCollector;
 import io.github.resilience4j.circuitbreaker.CallNotPermittedException;
 import io.github.resilience4j.circuitbreaker.CircuitBreaker;
 import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
@@ -13,6 +14,9 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Flux;
 
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
 
@@ -25,6 +29,18 @@ public class ProviderCircuitBreaker {
 
     @Resource
     private CircuitBreakerRegistry circuitBreakerRegistry;
+
+    @Resource
+    private AIMetricsCollector aiMetricsCollector;
+
+    // 熔断器状态是枚举，Prometheus 只能存数值，这里定死映射关系
+    private static final Map<CircuitBreaker.State, Integer> CIRCUIT_STATE_CODES = Map.of(
+            CircuitBreaker.State.CLOSED, 0,
+            CircuitBreaker.State.OPEN, 1,
+            CircuitBreaker.State.HALF_OPEN, 2);
+
+    /** 每个 provider 的 Gauge 只注册一次，重复注册会创建同名 meter */
+    private final Set<String> gaugesRegistered = ConcurrentHashMap.newKeySet();
 
     /** 关掉后完全退回原行为：不统计、不拦截，排障时可以二分定位问题是否出在熔断上 */
     @Value("${lilac.circuit-breaker.enabled:true}")
@@ -86,6 +102,14 @@ public class ProviderCircuitBreaker {
     private CircuitBreaker breakerFor(ModelProvider provider) {
         String name = provider.getProviderName();
         // 按 providerName 隔离：DeepSeek 挂了不该连坐 qwen
-        return circuitBreakerRegistry.circuitBreaker(name == null || name.isBlank() ? "unknown" : name);
+        String key = name == null || name.isBlank() ? "unknown" : name;
+        CircuitBreaker breaker = circuitBreakerRegistry.circuitBreaker(key);
+        // 熔断是 W7 花了整周做的能力，但在 Prometheus 里此前完全看不见。
+        // 每个 provider 只登记一次，Gauge 持 supplier，采集时才读真实状态
+        if (gaugesRegistered.add(key)) {
+            aiMetricsCollector.registerCircuitStateGauge(key,
+                    () -> CIRCUIT_STATE_CODES.getOrDefault(breaker.getState(), 0));
+        }
+        return breaker;
     }
 }

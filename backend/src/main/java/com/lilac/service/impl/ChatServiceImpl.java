@@ -15,6 +15,7 @@ import com.lilac.exception.CallRejectedException;
 import com.lilac.metrics.AIMetricsCollector;
 import com.lilac.model.StreamResponse;
 import com.lilac.service.*;
+import io.github.resilience4j.circuitbreaker.CallNotPermittedException;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -155,6 +156,8 @@ public class ChatServiceImpl implements ChatService {
                     return Flux.error(e);
                 }
                 log.warn("模型 {} 流式调用失败，回退到备选模型 {}", streamPrimary.getModelKey(), fallbackModel.getModelKey(), e);
+                aiMetricsCollector.recordFallback(
+                        streamPrimary.getModelKey(), fallbackModel.getModelKey(), describeFailureSource(e));
                 return streamWithModel(fallbackModel, chatRequest, userId, apiKeyId, startTime);
             });
         } else {
@@ -201,6 +204,8 @@ public class ChatServiceImpl implements ChatService {
             Model fallbackModel = fallbackModels.get(i);
             try {
                 log.info("尝试 Fallback 模型: {}", fallbackModel.getModelKey());
+                aiMetricsCollector.recordFallback(
+                        describeFailureSource(lastFailure), fallbackModel.getModelKey(), "primary_failed");
                 return callModel(fallbackModel, chatRequest, userId, apiKeyId, startTime);
             } catch (CallRejectedException rejected) {
                 // 备选模型同样被闸门拒绝，再试没意义
@@ -213,6 +218,7 @@ public class ChatServiceImpl implements ChatService {
         if (retries == 0) {
             // 没有备选可试：这行是「降级静默失效」的唯一线索，否则客户端只拿到 500，日志里看不出没降级过
             log.error("没有可用的备选模型（本次降级机会为 0），主选失败原因：{}", lastFailure == null ? "无" : lastFailure.getMessage());
+            aiMetricsCollector.recordFallback(describeFailureSource(lastFailure), "none", "no_fallback_available");
         }
         if (lastFailure == null) {
             throw new BusinessException(HttpsCodeEnum.NO_AVAILABLE_MODEL, "没有可用的模型");
@@ -230,6 +236,12 @@ public class ChatServiceImpl implements ChatService {
         // 校验用户配额与余额
         checkUserQuotaAndBalance(userId, providerContext.byok(), reservation);
         callSettlementService.reserve(reservation);
+
+        String providerName = providerContext.provider().getProviderName();
+        // 路由决策在这里记：此时才拿到 provider 名，放更早的位置就得为埋点多查一次库
+        aiMetricsCollector.recordRoutingDecision(
+                determineStrategyType(chatRequest.getRoutingStrategy(), chatRequest.getModel()),
+                providerName, model.getModelKey());
 
         boolean modelInvoked = false;
         try {
@@ -289,11 +301,18 @@ public class ChatServiceImpl implements ChatService {
             // doOnComplete / doOnError / doOnCancel 都可能触发，用 CAS 保证只结一次或只退一次
             final AtomicBoolean reservationClosed = new AtomicBoolean(false);
 
+            String providerName = providerContext.provider().getProviderName();
+            aiMetricsCollector.recordRoutingDecision(
+                    determineStrategyType(chatRequest.getRoutingStrategy(), chatRequest.getModel()),
+                    providerName, model.getModelKey());
+
             // 本次流的唯一标识与创建时间（所有 chunk 共用）
             final String traceId = IdUtil.simpleUUID();
             final long created = System.currentTimeMillis() / 1000;
             // 首个块标识，用于在 delta 中携带 role
             final boolean[] isFirstChunk = {true};
+            // TTFT 只记第一次：流式下它就是用户真正感知的等待时间
+            final boolean[] ttftRecorded = {false};
             // Token 计数器（流式通常只有最后一个 chunk 携带 usage）
             final int[] promptTokens = {0};
             final int[] completionTokens = {0};
@@ -310,6 +329,12 @@ public class ChatServiceImpl implements ChatService {
                     // 既没有文本也没有思考内容，跳过空 chunk
                     if (!chunk.hasText() && !chunk.hasReasoningContent()) {
                         return Flux.empty();
+                    }
+                    // 第一个有内容的块到达时记 TTFT：空块不算「用户看到字」的时间点
+                    if (!ttftRecorded[0]) {
+                        ttftRecorded[0] = true;
+                        aiMetricsCollector.recordTtft(providerName, model.getModelKey(),
+                                System.currentTimeMillis() - startTime);
                     }
 
                     // 构建 Delta
@@ -567,6 +592,16 @@ public class ChatServiceImpl implements ChatService {
 
     private static boolean isEmpty(List<Model> models) {
         return models == null || models.isEmpty();
+    }
+
+    /**
+     * 降级原因的标签值。熔断打开的失败和真的打到上游失败，在面板上要能分开看
+     */
+    private static String describeFailureSource(Throwable failure) {
+        if (failure instanceof CallNotPermittedException) {
+            return "circuit_open";
+        }
+        return failure == null ? "unknown" : "upstream_error";
     }
 
     /**

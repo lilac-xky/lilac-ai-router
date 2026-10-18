@@ -44,6 +44,14 @@ class AIMetricsCollectorTest {
         collector.recordProbeSuccess(null, null, 210);
         collector.recordProbeFailure("deepseek", "deepseek-flash", "AUTH");
         collector.recordProbeFailure(null, null, null);
+        collector.recordRoutingDecision("auto", "deepseek", "deepseek-flash");
+        collector.recordRoutingDecision(null, null, null);
+        collector.recordTtft("deepseek", "deepseek-flash", 180);
+        collector.recordTtft(null, null, 180);
+        collector.recordFallback("qwen-plus", "deepseek-flash", "circuit_open");
+        collector.recordFallback(null, null, null);
+        collector.registerCircuitStateGauge("deepseek", () -> 0);
+        collector.registerCircuitStateGauge(null, () -> 2);
         return collector;
     }
 
@@ -61,7 +69,7 @@ class AIMetricsCollectorTest {
                                 .collect(Collectors.toSet()))
                         .collect(Collectors.toSet())));
 
-        assertTrue(tagKeysByName.size() >= 8, "埋点数量不对，实际=" + tagKeysByName.keySet());
+        assertTrue(tagKeysByName.size() >= 12, "埋点数量不对，实际=" + tagKeysByName.keySet());
         tagKeysByName.forEach((name, tagKeySets) -> assertEquals(1, tagKeySets.size(),
                 "meter「" + name + "」出现了多套 tag key：" + tagKeySets
                         + "；Prometheus 会丢弃后注册的 meter，指标会静默消失"));
