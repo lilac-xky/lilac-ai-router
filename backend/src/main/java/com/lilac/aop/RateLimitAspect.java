@@ -12,6 +12,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.aspectj.lang.ProceedingJoinPoint;
 import org.aspectj.lang.annotation.Around;
 import org.aspectj.lang.annotation.Aspect;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import org.springframework.web.context.request.RequestContextHolder;
 import org.springframework.web.context.request.ServletRequestAttributes;
@@ -30,6 +31,10 @@ public class RateLimitAspect {
     @Resource
     private RateLimitService rateLimitService;
 
+    /** 压测用倍率开关，默认 1 表示完全按注解上的 limit。只放大、不缩小 */
+    @Value("${lilac.rate-limit.multiplier:1}")
+    private int rateLimitMultiplier = 1;
+
     @Around("@annotation(rateLimit)")
     public Object doRateLimit(ProceedingJoinPoint joinPoint, RateLimit rateLimit) throws Throwable {
         // 获取请求对象
@@ -46,13 +51,31 @@ public class RateLimitAspect {
         }
         // 将 TimeUnit 转换为 Duration
         Duration duration = toDuration(rateLimit.window(), rateLimit.timeUnit());
+        int limit = effectiveLimit(rateLimit.limit());
         // 执行限流检查
-        boolean allowed = rateLimitService.tryAcquire(limitKey, rateLimit.limit(), duration);
+        boolean allowed = rateLimitService.tryAcquire(limitKey, limit, duration);
         if (!allowed) {
-            log.warn("Rate limit exceeded, key: {}, limit: {}/{} {}", limitKey, rateLimit.limit(), rateLimit.window(), rateLimit.timeUnit());
+            log.warn("Rate limit exceeded, key: {}, limit: {}/{} {}", limitKey, limit, rateLimit.window(), rateLimit.timeUnit());
             throw new BusinessException(HttpsCodeEnum.OPERATION_ERROR, "请求过于频繁，请稍后再试");
         }
         return joinPoint.proceed();
+    }
+
+    /**
+     * 生效限额。{@code lilac.rate-limit.multiplier} 默认 1，只在压测时调大。
+     *
+     * <p>注解上的 limit 是编译期常量，没法直接读配置；而压测又必须突破 60/s 才能测到网关
+     * 真实承载能力（否则测出来的是限流器的拒绝能力）。所以这里留一个倍率开关：
+     * 生产默认 1，压测启动参数传 {@code --lilac.rate-limit.multiplier=100}。
+     *
+     * <p>倍率只能放大不能缩小 —— 缩小限流会让线上更不安全，这不该由配置随手决定。
+     */
+    private int effectiveLimit(int annotationLimit) {
+        if (rateLimitMultiplier <= 1) {
+            return annotationLimit;
+        }
+        long scaled = (long) annotationLimit * rateLimitMultiplier;
+        return scaled > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) scaled;
     }
 
     /**

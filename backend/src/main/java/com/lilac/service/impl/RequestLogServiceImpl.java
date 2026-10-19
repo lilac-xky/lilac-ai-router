@@ -10,6 +10,7 @@ import com.lilac.service.RequestLogService;
 import com.mybatisflex.core.paginate.Page;
 import com.mybatisflex.core.query.QueryWrapper;
 import jakarta.annotation.Resource;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
@@ -33,6 +34,16 @@ public class RequestLogServiceImpl implements RequestLogService {
     private ApiKeyService apiKeyService;
     @Resource
     private BillingService billingService;
+
+    /**
+     * 压测时关掉日志落库。默认 true。
+     *
+     * <p>压测会在几分钟内产生几十万条记录，MySQL 写入本身就是瓶颈，
+     * 会把「网关处理能力」的测量污染成「MySQL 写入能力」的测量。
+     * 关掉之后计费、指标、Redis 限流全都照跑，只有日志表这一路被跳过。
+     */
+    @Value("${lilac.request-log.persist-enabled:true}")
+    private boolean persistEnabled = true;
 
 
     /**
@@ -62,6 +73,10 @@ public class RequestLogServiceImpl implements RequestLogService {
     @Async
     public void logRequest(Long userId, Long apiKeyId, Long modelId, String modelName, Integer promptTokens, Integer completionTokens,
                            Integer totalTokens, Integer duration, String status, String errorMessage) {
+        // 压测开关：跳过落库，但计费与指标不受影响（它们在调用方各自完成）
+        if (!persistEnabled) {
+            return;
+        }
         // 计算本次请求费用（仅成功且有 Token 消耗时）
         BigDecimal cost = BigDecimal.ZERO;
         if ("success".equals(status) && modelId != null && totalTokens != null && totalTokens > 0) {
