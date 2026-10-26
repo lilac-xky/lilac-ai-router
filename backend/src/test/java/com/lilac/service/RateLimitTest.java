@@ -232,6 +232,30 @@ public class RateLimitTest extends IntegrationTestSupport {
     }
 
     @Test
+    @DisplayName("内存 · 限流键必须带 TTL，否则轮换 key 就能堆出永不过期的键")
+    void rateLimitKeys_alwaysCarryTtl() {
+        int limit = 3;
+        rateLimitService.tryAcquire(rawKey, limit, Duration.ofSeconds(60));
+
+        // 一个逻辑限流器展开成 3 个物理键（见类注释），三个都必须有 TTL。
+        // 曾经三个都是 -1：RateLimitServiceImpl 用 trySetRate(type, limit, duration) 建规则，
+        // 该方法把 keepAliveTime 写成 0，Redisson 的 Lua 于是跳过 pexpire。
+        // 而限流键的输入是没鉴权的 Authorization 头 —— 攻击者每个请求换一个 key 就能永久占一份内存
+        List<String> physicalKeys = List.of(
+                rawKey,
+                "{" + rawKey + "}:value",
+                "{" + rawKey + "}:permits");
+        List<Long> ttls = physicalKeys.stream()
+                .map(k -> redissonClient.getBucket(k).remainTimeToLive())
+                .toList();
+        log.info("[限流·内存·{}] limit={} 三个物理键的 TTL → {}", runId, limit, ttls);
+
+        assertThat(ttls)
+                .as("任何一个键 TTL=-1（永不过期）都意味着轮换 key 可以无限撑大 Redis")
+                .allMatch(ttl -> ttl > 0);
+    }
+
+    @Test
     @DisplayName("额度 · 读剩余许可数：未初始化时抛异常，初始化后为 limit − 已消耗")
     void getAvailablePermits_reflectsConsumption() {
         rateLimitService.tryAcquire(rawKey, PERMITS_LIMIT, Duration.ofSeconds(60));
